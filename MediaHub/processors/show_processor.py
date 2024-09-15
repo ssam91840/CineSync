@@ -3,7 +3,7 @@ import re
 from utils.file_utils import extract_resolution_from_filename, extract_folder_year, clean_query, extract_year, extract_resolution_from_folder
 from api.tmdb_api import search_tv_show, get_episode_name
 from utils.logging_utils import log_message
-from config.config import is_skip_extras_folder_enabled, get_api_key, offline_mode
+from config.config import is_skip_extras_folder_enabled, get_api_key, offline_mode, is_override_structure_enabled, is_maintain_source_dir_enabled
 from dotenv import load_dotenv, find_dotenv
 
 # Retrieve base_dir from environment variables
@@ -13,6 +13,16 @@ source_dirs = os.getenv('SOURCE_DIR', '').split(',')
 global api_key
 global api_warning_logged
 global offline_mode
+
+# New configuration options
+override_structure = is_override_structure_enabled()
+maintain_source_dir = is_maintain_source_dir_enabled()
+
+# Determine the base folder name based on MAINTAIN_SOURCE_DIR
+if maintain_source_dir:
+    base_folder_name = os.path.basename(source_dirs[-1])
+else:
+    base_folder_name = 'Shows'
 
 def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index, episode_match):
     global offline_mode
@@ -112,42 +122,57 @@ def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enab
     # Determine resolution-specific folder for shows
     resolution = extract_resolution_from_filename(file)
     if not resolution:
-        # If resolution extraction from filename fails, use folder name as a fallback
         resolution = extract_resolution_from_folder(parent_folder_name)
         if resolution:
             log_message(f"Resolution extracted from folder name: {resolution}", level="DEBUG")
         else:
             log_message(f"Resolution could not be extracted from filename or folder name. Defaulting to 'Shows'.", level="DEBUG")
 
-    if 'remux' in file.lower():
-        if '2160' in file or '4k' in file.lower():
-            resolution_folder = 'UltraHDRemuxShows'
-        elif '1080' in file:
-            resolution_folder = '1080pRemuxLibrary'
+    if not override_structure:
+        if 'remux' in file.lower():
+            if '2160' in file or '4k' in file.lower():
+                resolution_folder = 'UltraHDRemuxShows'
+            elif '1080' in file:
+                resolution_folder = '1080pRemuxLibrary'
+            else:
+                resolution_folder = 'RemuxShows'
         else:
-            resolution_folder = 'RemuxShows'
+            resolution_folder = {
+                '2160p': 'UltraHD',
+                '4k': 'UltraHD',
+                '1080p': 'FullHD',
+                '720p': 'SDClassics',
+                '480p': 'Retro480p',
+                'DVD': 'RetroDVD'
+            }.get(resolution, 'Shows')
     else:
-        resolution_folder = {
-            '2160p': 'UltraHD',
-            '4k': 'UltraHD',
-            '1080p': 'FullHD',
-            '720p': 'SDClassics',
-            '480p': 'Retro480p',
-            'DVD': 'RetroDVD'
-        }.get(resolution, 'Shows')
+        resolution_folder = ''
+        log_message("OVERRIDE_STRUCTURE is enabled, skipping resolution-based folder structure for TV shows.", level="INFO")
 
     # Define paths
-    base_dest_path = os.path.join(dest_dir, 'CineSync', 'Shows', resolution_folder, show_folder)
+    if override_structure:
+        base_dest_path = os.path.join(dest_dir, 'CineSync', base_folder_name, show_folder)
+        extras_base_dest_path = os.path.join(dest_dir, 'CineSync', base_folder_name, show_folder)
+    else:
+        base_dest_path = os.path.join(dest_dir, 'CineSync', base_folder_name, resolution_folder, show_folder)
+        extras_base_dest_path = os.path.join(dest_dir, 'CineSync', base_folder_name, 'Extras', show_folder)
+
     season_dest_path = os.path.join(base_dest_path, season_folder)
-    extras_base_dest_path = os.path.join(dest_dir, 'CineSync', 'Shows', 'Extras', show_folder)
     extras_dest_path = os.path.join(extras_base_dest_path, 'Extras')
+
+    # Initialize dest_file
+    dest_file = os.path.join(base_dest_path, file)
 
     # Function to check if show folder exists in any resolution folder
     def find_show_folder_in_resolution_folders():
-        for res_folder in ['UltraHD', 'FullHD', 'SDClassics', 'Retro480p', 'RetroDVD', 'Shows']:
-            show_folder_path = os.path.join(dest_dir, 'CineSync', 'Shows', res_folder, show_folder)
-            if os.path.isdir(show_folder_path):
-                return show_folder_path
+        if override_structure:
+            show_folder_path = os.path.join(dest_dir, 'CineSync', base_folder_name, show_folder)
+            return show_folder_path if os.path.isdir(show_folder_path) else None
+        else:
+            for res_folder in ['UltraHD', 'FullHD', 'SDClassics', 'Retro480p', 'RetroDVD', 'Shows']:
+                show_folder_path = os.path.join(dest_dir, 'CineSync', base_folder_name, res_folder, show_folder)
+                if os.path.isdir(show_folder_path):
+                    return show_folder_path
         return None
 
     # Check for existing show folder and update paths
@@ -158,7 +183,7 @@ def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enab
         # Check if SKIP_EXTRAS_FOLDER is enabled
         if is_skip_extras_folder_enabled() and create_extras_folder:
             log_message(f"Skipping symlinking of extras file: {file} due to SKIP_EXTRAS_FOLDER being enabled.", level="INFO")
-            return  # Exit without processing extras folder files
+            return None
         else:
             # Only create Extras folder if it doesn't exist and is needed
             if create_extras_folder and not os.path.exists(extras_dest_path):
@@ -169,8 +194,6 @@ def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enab
         if create_extras_folder and not is_skip_extras_folder_enabled():
             os.makedirs(extras_base_dest_path, exist_ok=True)
             dest_file = os.path.join(extras_dest_path, file)
-        else:
-            dest_file = os.path.join(base_dest_path, file)
 
     if episode_match:
         if rename_enabled:

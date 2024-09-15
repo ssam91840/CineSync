@@ -69,3 +69,9 @@ def is_movie_collection_enabled():
 
 def is_skip_extras_folder_enabled():
     return os.getenv('SKIP_EXTRAS_FOLDER', 'false').lower() in ['true', '1', 'yes']
+
+def is_override_structure_enabled():
+    return os.getenv('OVERRIDE_STRUCTURE', 'false').lower() in ['true', '1', 'yes']
+
+def is_maintain_source_dir_enabled():
+    return os.getenv('MAINTAIN_SOURCE_DIR', 'false').lower() in ['true', '1', 'yes']

@@ -4,11 +4,19 @@ import requests
 from utils.file_utils import extract_movie_name_and_year, extract_resolution_from_filename, check_existing_variations, standardize_title, remove_genre_names, clean_query
 from api.tmdb_api import search_movie, get_movie_collection
 from utils.logging_utils import log_message
-from config.config import is_movie_collection_enabled, is_tmdb_folder_id_enabled, is_rename_enabled, get_api_key, offline_mode
+from config.config import is_movie_collection_enabled, is_tmdb_folder_id_enabled, is_rename_enabled, get_api_key, offline_mode, is_override_structure_enabled, is_maintain_source_dir_enabled
 from dotenv import load_dotenv, find_dotenv
 
 # Retrieve base_dir from environment variables
 source_dirs = os.getenv('SOURCE_DIR', '').split(',')
+override_structure = is_override_structure_enabled()
+maintain_source_dir = is_maintain_source_dir_enabled()
+
+# Determine the base folder name based on MAINTAIN_SOURCE_DIR
+if maintain_source_dir:
+    base_folder_name = os.path.basename(source_dirs[-1])
+else:
+    base_folder_name = 'Movies'
 
 # Global variables to track API key state
 global api_key
@@ -83,12 +91,17 @@ def process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_ena
         log_message(f"Found existing variation for {movie_folder}: {existing_variation}", level="INFO")
         movie_folder = existing_variation
 
-    # Determine resolution-specific folder if not already set (for collections)
-    if 'resolution_folder' not in locals():
+    # Check for existing variations
+    existing_variation = check_existing_variations(movie_folder, year, dest_dir)
+    if existing_variation:
+        log_message(f"Found existing variation for {movie_folder}: {existing_variation}", level="INFO")
+        movie_folder = existing_variation
+
+    # Skip resolution-specific folder if OVERRIDE_STRUCTURE is enabled
+    if not override_structure:
         resolution = extract_resolution_from_filename(file)
 
         # Check for remux files first
-        resolution = extract_resolution_from_filename(file)
         if 'remux' in file.lower():
             if '2160' in file or '4k' in file.lower():
                 resolution_folder = '4KRemux'
@@ -104,12 +117,15 @@ def process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_ena
                 '480p': 'Retro480p',
                 'DVD': 'DVDClassics'
             }.get(resolution, 'Movies')
+    else:
+        log_message("OVERRIDE_STRUCTURE is enabled, skipping resolution-based folder structure.", level="INFO")
+        resolution_folder = ''
 
-        # Check for existing variations
-        if collection_info:
-            existing_variation = check_existing_variations(collection_folder, None, dest_dir)
-        else:
-            existing_variation = check_existing_variations(movie_folder, year, dest_dir)
+    # Check for existing variations
+    if collection_info:
+        existing_variation = check_existing_variations(collection_folder, None, dest_dir)
+    else:
+        existing_variation = check_existing_variations(movie_folder, year, dest_dir)
 
     if existing_variation:
         log_message(f"Found existing variation for {collection_folder if collection_info else movie_folder}: {existing_variation}", level="INFO")
@@ -118,10 +134,11 @@ def process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_ena
         else:
             movie_folder = existing_variation
 
+    # Construct destination path
     if collection_info:
-        dest_path = os.path.join(dest_dir, 'CineSync', 'Movies', resolution_folder, collection_folder, movie_folder)
+        dest_path = os.path.join(dest_dir, 'CineSync', base_folder_name, resolution_folder, collection_folder, movie_folder) if not override_structure else os.path.join(dest_dir, 'CineSync', base_folder_name, collection_folder, movie_folder)
     else:
-        dest_path = os.path.join(dest_dir, 'CineSync', 'Movies', resolution_folder, movie_folder)
+        dest_path = os.path.join(dest_dir, 'CineSync', base_folder_name, resolution_folder, movie_folder) if not override_structure else os.path.join(dest_dir, 'CineSync', base_folder_name, movie_folder)
 
     os.makedirs(dest_path, exist_ok=True)
 
