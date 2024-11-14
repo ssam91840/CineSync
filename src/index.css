@@ -1,0 +1,86 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-black text-gray-100;
+  }
+}
+
+@layer utilities {
+  .scrollbar-hide {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+  
+  .scrollbar-hide::-webkit-scrollbar {
+    display: none;
+  }
+
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-in-out;
+  }
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@layer components {
+  .btn {
+    @apply px-4 py-2 rounded-lg transition-colors;
+  }
+
+  .btn-primary {
+    @apply bg-indigo-600 hover:bg-indigo-700 text-white;
+  }
+
+  .btn-secondary {
+    @apply bg-gray-800 hover:bg-gray-700 text-gray-200;
+  }
+
+  .card {
+    @apply bg-gray-900 rounded-xl p-6 border border-gray-800;
+  }
+
+  .card-title {
+    @apply text-xl font-semibold mb-4;
+  }
+
+  .input {
+    @apply bg-gray-800 border border-gray-700 rounded-lg px-3 py-2 text-gray-200 
+           focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:border-transparent
+           placeholder:text-gray-500;
+  }
+
+  .label {
+    @apply block text-sm font-medium text-gray-300 mb-1;
+  }
+
+  .switch {
+    @apply relative inline-flex h-6 w-11 items-center rounded-full bg-gray-700 
+           transition-colors focus:outline-none focus:ring-2 focus:ring-indigo-500 
+           focus:ring-offset-2 focus:ring-offset-black;
+  }
+
+  .switch[data-checked] {
+    @apply bg-indigo-600;
+  }
+
+  .switch-thumb {
+    @apply pointer-events-none inline-block h-5 w-5 transform rounded-full bg-white 
+           shadow-lg ring-0 transition duration-200 ease-in-out translate-x-0;
+  }
+
+  .switch[data-checked] .switch-thumb {
+    @apply translate-x-5;
+  }
+}
