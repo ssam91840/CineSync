@@ -2,6 +2,7 @@ import express from 'express';
 import { writeFile, readFile, readdir, stat } from 'fs/promises';
 import { join, resolve } from 'path';
 import cors from 'cors';
+import { spawn } from 'child_process';
 import type { LogEntry } from '../src/types';
 
 const app = express();
@@ -10,8 +11,9 @@ const PORT = 3001;
 app.use(cors());
 app.use(express.json());
 
-// In-memory log storage (in production, use a proper database)
+// In-memory log storage
 let logs: LogEntry[] = [];
+let scanProcess: ReturnType<typeof spawn> | null = null;
 
 // Add a log entry
 const addLog = (log: Omit<LogEntry, 'id' | 'timestamp'>) => {
@@ -20,8 +22,7 @@ const addLog = (log: Omit<LogEntry, 'id' | 'timestamp'>) => {
     timestamp: new Date().toISOString(),
     ...log
   };
-  logs.unshift(newLog); // Add to beginning of array
-  // Keep only last 1000 logs
+  logs.unshift(newLog);
   if (logs.length > 1000) {
     logs = logs.slice(0, 1000);
   }
@@ -35,7 +36,85 @@ addLog({
   source: 'system'
 });
 
-// Endpoint to get logs
+// Endpoint to start the Python scan
+app.post('/api/scan/start', (req, res) => {
+  if (scanProcess) {
+    return res.status(400).json({ error: 'Scan already in progress' });
+  }
+
+  // Set headers for SSE
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive'
+  });
+
+  // Start the Python script
+  scanProcess = spawn('python', ['MediaHub/main.py', '--auto-select']);
+
+  scanProcess.stdout.on('data', (data) => {
+    const lines = data.toString().split('\n');
+    lines.forEach(line => {
+      if (line.trim()) {
+        res.write(`data: ${JSON.stringify(line)}\n\n`);
+      }
+    });
+  });
+
+  scanProcess.stderr.on('data', (data) => {
+    const lines = data.toString().split('\n');
+    lines.forEach(line => {
+      if (line.trim()) {
+        res.write(`data: ${JSON.stringify(`Error: ${line}`)}\n\n`);
+      }
+    });
+  });
+
+  scanProcess.on('close', (code) => {
+    res.write(`data: ${JSON.stringify(`Process exited with code ${code}`)}\n\n`);
+    scanProcess = null;
+    res.end();
+  });
+});
+
+// SSE endpoint for scan logs
+app.get('/api/scan/logs', (req, res) => {
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive'
+  });
+
+  if (!scanProcess) {
+    res.write('data: No scan in progress\n\n');
+    return res.end();
+  }
+
+  scanProcess.stdout.on('data', (data) => {
+    const lines = data.toString().split('\n');
+    lines.forEach(line => {
+      if (line.trim()) {
+        res.write(`data: ${JSON.stringify(line)}\n\n`);
+      }
+    });
+  });
+
+  scanProcess.stderr.on('data', (data) => {
+    const lines = data.toString().split('\n');
+    lines.forEach(line => {
+      if (line.trim()) {
+        res.write(`data: ${JSON.stringify(`Error: ${line}`)}\n\n`);
+      }
+    });
+  });
+
+  scanProcess.on('close', () => {
+    res.write('data: Scan completed\n\n');
+    res.end();
+  });
+});
+
+// Rest of the existing endpoints...
 app.get('/api/logs', async (req, res) => {
   try {
     res.json({ logs });
@@ -45,7 +124,6 @@ app.get('/api/logs', async (req, res) => {
   }
 });
 
-// Endpoint to add a log
 app.post('/api/logs', async (req, res) => {
   try {
     const { level, message, source, details } = req.body;
@@ -57,10 +135,9 @@ app.post('/api/logs', async (req, res) => {
   }
 });
 
-// Endpoint to scan directory
 app.get('/api/files/scan', async (req, res) => {
   try {
-    const { path } = req.query;
+    const { path, recursive } = req.query;
     if (!path || typeof path !== 'string') {
       addLog({
         level: 'error',
@@ -71,28 +148,38 @@ app.get('/api/files/scan', async (req, res) => {
     }
 
     const resolvedPath = resolve(path);
-    const files = await readdir(resolvedPath);
-    
+    const fileInfos: any[] = [];
+
+    // Recursive function to scan directories
+    const scanDirectory = async (dirPath: string) => {
+      const entries = await readdir(dirPath);
+      
+      for (const entry of entries) {
+        const fullPath = join(dirPath, entry);
+        const stats = await stat(fullPath);
+        
+        fileInfos.push({
+          name: entry,
+          path: fullPath,
+          type: stats.isDirectory() ? 'directory' : 'file',
+          size: stats.size,
+          modifiedAt: stats.mtime
+        });
+
+        // If it's a directory and recursive scanning is enabled, scan it
+        if (stats.isDirectory() && recursive !== 'false') {
+          await scanDirectory(fullPath);
+        }
+      }
+    };
+
     addLog({
       level: 'info',
       message: `Starting scan of directory: ${resolvedPath}`,
       source: 'scan'
     });
-    
-    const fileInfos = await Promise.all(
-      files.map(async (file) => {
-        const fullPath = join(resolvedPath, file);
-        const stats = await stat(fullPath);
-        
-        return {
-          name: file,
-          path: fullPath,
-          type: stats.isDirectory() ? 'directory' : 'file',
-          size: stats.size,
-          modifiedAt: stats.mtime
-        };
-      })
-    );
+
+    await scanDirectory(resolvedPath);
 
     addLog({
       level: 'success',
@@ -110,69 +197,6 @@ app.get('/api/files/scan', async (req, res) => {
     });
     console.error('Error scanning directory:', error);
     res.status(500).json({ error: 'Failed to scan directory' });
-  }
-});
-
-// Environment settings endpoints
-app.get('/api/settings/environment', async (req, res) => {
-  try {
-    const envPath = join(process.cwd(), '.env');
-    const envContent = await readFile(envPath, 'utf-8');
-    
-    const settings = envContent
-      .split('\n')
-      .filter(line => line.trim() && !line.startsWith('#'))
-      .reduce((acc, line) => {
-        const [key, value] = line.split('=');
-        if (key && value) {
-          acc[key.trim()] = value.trim();
-        }
-        return acc;
-      }, {} as Record<string, string>);
-    
-    res.json({ success: true, settings });
-  } catch (error) {
-    console.error('Error reading environment settings:', error);
-    res.status(500).json({ success: false, error: 'Failed to read environment settings' });
-  }
-});
-
-app.post('/api/settings/environment', async (req, res) => {
-  try {
-    const { settings } = req.body;
-    const envPath = join(process.cwd(), '.env');
-    
-    let envContent = await readFile(envPath, 'utf-8');
-    
-    settings.forEach(({ key, value }: { key: string; value: string | number | boolean }) => {
-      const regex = new RegExp(`^${key}=.*$`, 'm');
-      const newLine = `${key}=${value}`;
-      
-      if (regex.test(envContent)) {
-        envContent = envContent.replace(regex, newLine);
-      } else {
-        envContent += `\n${newLine}`;
-      }
-    });
-    
-    await writeFile(envPath, envContent.trim() + '\n');
-    
-    addLog({
-      level: 'success',
-      message: 'Environment settings updated successfully',
-      source: 'system'
-    });
-    
-    res.json({ success: true, message: 'Environment settings updated successfully' });
-  } catch (error) {
-    addLog({
-      level: 'error',
-      message: 'Failed to update environment settings',
-      source: 'system',
-      details: error instanceof Error ? error.message : 'Unknown error'
-    });
-    console.error('Error updating environment settings:', error);
-    res.status(500).json({ success: false, error: 'Failed to update environment settings' });
   }
 });
 

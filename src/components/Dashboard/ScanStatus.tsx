@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Loader2, HardDrive, AlertCircle, Clock } from 'lucide-react';
 import type { ScanStatus as ScanStatusType } from '../../types';
 import { getEnvironmentValue } from '../../utils/environment';
+import ScanOutput from './ScanOutput';
 
 interface Props {
   onScanComplete?: () => void;
@@ -13,6 +14,7 @@ interface Props {
 export default function ScanStatus({ onScanComplete, isScanning, onScanStart, lastScan }: Props) {
   const [status, setStatus] = useState<ScanStatusType | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [logs, setLogs] = useState<string[]>([]);
 
   useEffect(() => {
     const checkStatus = async () => {
@@ -40,7 +42,29 @@ export default function ScanStatus({ onScanComplete, isScanning, onScanStart, la
 
   const handleScanClick = async () => {
     setError(null);
+    setLogs([]);
     try {
+      // Start the Python script
+      const response = await fetch('http://localhost:3001/api/scan/start', {
+        method: 'POST'
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to start scan');
+      }
+
+      // Set up SSE connection for real-time logs
+      const eventSource = new EventSource('http://localhost:3001/api/scan/logs');
+      
+      eventSource.onmessage = (event) => {
+        const log = event.data;
+        setLogs((prevLogs) => [...prevLogs, log]);
+      };
+
+      eventSource.onerror = () => {
+        eventSource.close();
+      };
+
       await onScanStart();
     } catch (error) {
       console.error('Scan failed:', error);
@@ -152,6 +176,11 @@ export default function ScanStatus({ onScanComplete, isScanning, onScanStart, la
             <HardDrive className="h-5 w-5" />
             Start New Scan
           </button>
+        )}
+
+        {/* Log Output Box */}
+        {(logs.length > 0 || status.isScanning) && (
+          <ScanOutput logs={logs} />
         )}
       </div>
     </div>

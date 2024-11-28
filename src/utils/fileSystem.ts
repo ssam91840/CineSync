@@ -9,7 +9,7 @@ export interface FileInfo {
   modifiedAt?: Date;
 }
 
-export const scanDirectory = async (path: string): Promise<FileInfo[]> => {
+export const scanDirectory = async (path: string, recursive: boolean = true): Promise<FileInfo[]> => {
   try {
     debug('Scanning directory:', path);
     
@@ -17,7 +17,12 @@ export const scanDirectory = async (path: string): Promise<FileInfo[]> => {
       throw new Error('No path provided for scanning');
     }
 
-    const response = await fetch(`http://localhost:3001/api/files/scan?path=${encodeURIComponent(path)}`);
+    const queryParams = new URLSearchParams({
+      path: path,
+      recursive: recursive.toString()
+    });
+    
+    const response = await fetch(`http://localhost:3001/api/files/scan?${queryParams}`);
     
     if (!response.ok) {
       const errorData = await response.json();
