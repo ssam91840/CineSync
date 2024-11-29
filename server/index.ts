@@ -114,6 +114,68 @@ app.get('/api/scan/logs', (req, res) => {
   });
 });
 
+// Environment settings endpoints
+app.get('/api/settings/environment', async (req, res) => {
+  try {
+    const envPath = join(process.cwd(), '.env');
+    const envContent = await readFile(envPath, 'utf-8');
+    
+    const settings = envContent
+      .split('\n')
+      .filter(line => line.trim() && !line.startsWith('#'))
+      .reduce((acc, line) => {
+        const [key, value] = line.split('=');
+        if (key && value) {
+          acc[key.trim()] = value.trim();
+        }
+        return acc;
+      }, {} as Record<string, string>);
+    
+    res.json({ success: true, settings });
+  } catch (error) {
+    console.error('Error reading environment settings:', error);
+    res.status(500).json({ success: false, error: 'Failed to read environment settings' });
+  }
+});
+app.post('/api/settings/environment', async (req, res) => {
+  try {
+    const { settings } = req.body;
+    const envPath = join(process.cwd(), '.env');
+    
+    let envContent = await readFile(envPath, 'utf-8');
+    
+    settings.forEach(({ key, value }: { key: string; value: string | number | boolean }) => {
+      const regex = new RegExp(`^${key}=.*$`, 'm');
+      const newLine = `${key}=${value}`;
+      
+      if (regex.test(envContent)) {
+        envContent = envContent.replace(regex, newLine);
+      } else {
+        envContent += `\n${newLine}`;
+      }
+    });
+    
+    await writeFile(envPath, envContent.trim() + '\n');
+    
+    addLog({
+      level: 'success',
+      message: 'Environment settings updated successfully',
+      source: 'system'
+    });
+    
+    res.json({ success: true, message: 'Environment settings updated successfully' });
+  } catch (error) {
+    addLog({
+      level: 'error',
+      message: 'Failed to update environment settings',
+      source: 'system',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    });
+    console.error('Error updating environment settings:', error);
+    res.status(500).json({ success: false, error: 'Failed to update environment settings' });
+  }
+});
+
 // Rest of the existing endpoints...
 app.get('/api/logs', async (req, res) => {
   try {

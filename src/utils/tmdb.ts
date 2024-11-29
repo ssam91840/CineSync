@@ -26,7 +26,20 @@ export interface TMDBMovie {
 
 export interface MediaInfo extends FileInfo {
   tmdbInfo?: TMDBMovie | null;
+  parentFolder?: string;
 }
+
+const MEDIA_EXTENSIONS = new Set(['.mp4', '.mkv', '.avi', '.mov', '.m4v']);
+
+const isMediaFile = (filename: string): boolean => {
+  const ext = filename.toLowerCase().slice(filename.lastIndexOf('.'));
+  return MEDIA_EXTENSIONS.has(ext);
+};
+
+const getParentFolderName = (path: string): string => {
+  const parts = path.split(/[\\/]/);
+  return parts[parts.length - 2] || '';
+};
 
 export const scanMediaFiles = async (path: string, recursive: boolean = true): Promise<MediaInfo[]> => {
   try {
@@ -58,38 +71,18 @@ export const scanMediaFiles = async (path: string, recursive: boolean = true): P
       throw new Error('Invalid response format from scan endpoint');
     }
 
-    // Process all directories recursively
-    const processDirectory = async (dirPath: string, dirName: string): Promise<MediaInfo | null> => {
-      debug('Processing directory:', dirName);
-      const tmdbInfo = await searchMedia(dirName);
-      
-      if (tmdbInfo) {
-        return {
-          name: dirName,
-          path: dirPath,
-          type: 'directory',
-          tmdbInfo
-        };
-      }
-      return null;
-    };
+    // Process only directories that contain media files
+    const mediaFiles = data.filter(file => file.type === 'file' && isMediaFile(file.name));
+    const mediaParentFolders = new Set(mediaFiles.map(file => getParentFolderName(file.path)));
 
-    // Get all directories and process them
-    const directoryPromises = data
-      .filter(file => file.type === 'directory')
-      .map(dir => processDirectory(dir.path, dir.name));
+    // Process media files and their parent folders
+    const processedEntries = await Promise.all(
+      mediaFiles.map(async (file): Promise<MediaInfo> => {
+        const parentFolder = getParentFolderName(file.path);
+        let tmdbInfo = null;
 
-    // Process media files
-    const filePromises = data
-      .filter(file => file.type === 'file' && /\.(mp4|mkv|avi|mov|m4v)$/i.test(file.name))
-      .map(async (file): Promise<MediaInfo> => {
-        const pathParts = file.path.split(/[\\/]/);
-        const parentFolder = pathParts[pathParts.length - 2];
-        
-        let tmdbInfo = await searchMedia(file.name);
-        
-        if (!tmdbInfo && parentFolder) {
-          debug('Trying parent folder name for TMDB search:', parentFolder);
+        if (parentFolder && mediaParentFolders.has(parentFolder)) {
+          debug('Searching TMDB with parent folder:', parentFolder);
           tmdbInfo = await searchMedia(parentFolder);
         }
 
@@ -99,23 +92,24 @@ export const scanMediaFiles = async (path: string, recursive: boolean = true): P
           type: 'file',
           size: file.size,
           modifiedAt: file.modifiedAt ? new Date(file.modifiedAt) : undefined,
-          tmdbInfo
+          tmdbInfo,
+          parentFolder
         };
-      });
+      })
+    );
 
-    // Combine all results
-    const [directoryResults, fileResults] = await Promise.all([
-      Promise.all(directoryPromises),
-      Promise.all(filePromises)
-    ]);
+    // Group files by parent folder and only keep unique entries
+    const uniqueEntries = Array.from(
+      processedEntries.reduce((map, entry) => {
+        if (entry.parentFolder && entry.tmdbInfo) {
+          map.set(entry.parentFolder, entry);
+        }
+        return map;
+      }, new Map<string, MediaInfo>()).values()
+    );
 
-    const validResults = [
-      ...directoryResults.filter((result): result is MediaInfo => result !== null),
-      ...fileResults
-    ];
-
-    debug('Final processed items:', validResults.length);
-    return validResults;
+    debug('Final processed items:', uniqueEntries.length);
+    return uniqueEntries;
 
   } catch (error) {
     debug('Error in scanMediaFiles:', error);
