@@ -1,3 +1,5 @@
+![Github](https://github.com/user-attachments/assets/1d61e450-b5df-4a7d-960c-a4d77770c933)
+
 # CineSync - Organize Your Debrid Library Easily
 
 CineSync is a Python-based library management system designed to efficiently organize debrid libraries for TV shows, eliminating the need for Sonarr/Radarr. Users downloading from DMM Manager can seamlessly sort their library into seasons, whether it's a single file or a folder. CineSync streamlines the organization of your library and creates symbolic links, providing full control over your data locally. While highly optimized for debrid platforms, CineSync is also versatile and works effectively with non-debrid platforms.
