@@ -5,11 +5,14 @@ import logging
 import sys
 from dotenv import load_dotenv, find_dotenv
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Append the parent directory to the system path
+base_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '../..'))
+sys.path.append(base_dir)
 
-from processors.db_utils import initialize_db, load_processed_files, save_processed_file, delete_broken_symlinks, check_file_in_db
-from config.config import *
-from processors.symlink_creator import delete_broken_symlinks
+# Local imports from MediaHub
+from MediaHub.processors.db_utils import initialize_db, load_processed_files, save_processed_file, delete_broken_symlinks, check_file_in_db
+from MediaHub.config.config import *
+from MediaHub.processors.symlink_creator import *
 
 # Load .env file from the parent directory
 dotenv_path = find_dotenv('../.env')
@@ -17,23 +20,27 @@ if not dotenv_path:
     print(RED_COLOR + "Error: .env file not found in the parent directory." + RESET_COLOR)
     exit(1)
 
-load_dotenv(dotenv_path)
+# Define the logging level dictionary
+LOG_LEVELS = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S', stream=sys.stdout)
+# Get LOG_LEVEL from environment variable
+log_level = LOG_LEVELS.get(os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO)
+
+# Configure logging
+logging.basicConfig(level=log_level, format='%(asctime)s [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S', stream=sys.stdout)
 
 # Add state variables for mount status tracking
 mount_state = None
 
 def log_message(message, level="INFO"):
     """Logs a message at the specified level with additional context."""
-    levels = {
-        "DEBUG": logging.DEBUG,
-        "INFO": logging.INFO,
-        "WARNING": logging.WARNING,
-        "ERROR": logging.ERROR,
-        "CRITICAL": logging.CRITICAL,
-    }
-    logging.log(levels.get(level, logging.INFO), message)
+    logging.log(LOG_LEVELS.get(level.upper(), logging.INFO), message)
 
 def get_mount_point(path):
     """
@@ -64,45 +71,58 @@ def get_mount_point(path):
 
     return True, path
 
+def verify_mount_health(directory):
+    """
+    Performs health checks on the mounted directory without requiring write access.
+    Returns True if the mount appears healthy, False otherwise.
+    """
+    try:
+        contents = os.listdir(directory)
+        if not contents:
+            return True
+
+        for item in contents[:1]:
+            full_path = os.path.join(directory, item)
+            os.stat(full_path)
+
+        os.statvfs(directory)
+
+        return True
+
+    except OSError:
+        return False
+    except Exception:
+        return False
+
 def verify_rclone_mount(directory):
     """
     Verifies if the directory is under a mount and checks mount health.
-    Returns tuple: (is_mounted, has_version_file)
+    Returns tuple: (is_mounted, is_healthy)
     """
     global mount_state
-    log_message(f"Verifying mount status for directory: {directory}", level="DEBUG")
 
-    # Check if directory exists
     if not os.path.exists(directory):
-        mount_state = False
         return False, False
 
-    # Find the mount point for this directory
     is_mounted, mount_point = get_mount_point(directory)
 
     if is_mounted and mount_point:
-        if mount_state is not True:
-            log_message(f"Directory {directory} is under mount point: {mount_point}", level="INFO")
-            mount_state = True
+        is_healthy = verify_mount_health(directory)
 
-        # Perform mount health check
-        try:
-            # Try to list directory contents to verify mount is responsive
-            os.listdir(directory)
-
-            # Simply check if version.txt exists
-            version_file = os.path.join(mount_point, 'version.txt')
-            has_version_file = os.path.exists(version_file)
-
-            log_message(f"Version file is {'present' if has_version_file else 'missing'} at mount point {mount_point}", level="DEBUG")
-            return True, has_version_file
-
-        except Exception as e:
-            log_message(f"Mount point appears unresponsive: {str(e)}", level="WARNING")
-            mount_state = False
+        if is_healthy:
+            if mount_state != True:
+                log_message(f"Mount is now available: {mount_point}", level="INFO")
+                mount_state = True
+            return True, True
+        else:
+            if mount_state is not False:
+                log_message(f"Mount has become unresponsive: {mount_point}", level="WARNING")
+                mount_state = False
             return False, False
     else:
-        mount_state = False
+        if mount_state is not False:
+            log_message(f"Mount is not available: {directory}", level="WARNING")
+            mount_state = False
         return False, False
 
 def check_rclone_mount():
@@ -113,7 +133,9 @@ def check_rclone_mount():
     global mount_state
 
     if not is_rclone_mount_enabled():
-        log_message("Mount check is disabled", level="INFO")
+        if mount_state is not False:
+            log_message("Mount check is disabled", level="INFO")
+            mount_state = False
         return True
 
     src_dirs, _ = get_directories()
@@ -122,63 +144,16 @@ def check_rclone_mount():
         return False
 
     directory = src_dirs[0]
-    current_state = mount_state
 
     try:
-        is_mounted, has_version_file = verify_rclone_mount(directory)
-
-        if is_mounted:
-            if not has_version_file:
-                log_message(f"Mount detected, creating version file", level="INFO")
-                if not create_version_file(directory):
-                    log_message("Failed to create version file, mount may be read-only", level="ERROR")
-                    return False
-            return True
-        else:
-            if current_state is not False:
-                if not os.path.exists(directory):
-                    log_message(f"Mount unavailable - Directory does not exist: {directory}", level="WARNING")
-                else:
-                    log_message(f"Mount unavailable - Directory is not mounted or unresponsive: {directory}", level="WARNING")
-                mount_state = False
-            return False
+        is_mounted, is_healthy = verify_rclone_mount(directory)
+        return is_mounted and is_healthy
 
     except Exception as e:
-        if current_state is not False:
+        if mount_state is not False:
             log_message(f"Error checking mount: {str(e)}", level="ERROR")
             mount_state = False
         return False
-
-def create_version_file(directory):
-    """Creates version.txt file if it doesn't exist in the mounted directory."""
-    # First find the mount point
-    is_mounted, mount_point = get_mount_point(directory)
-    if not is_mounted or not mount_point:
-        log_message(f"Cannot create version file - no valid mount point found for {directory}", level="ERROR")
-        return False
-
-    version_file = os.path.join(mount_point, 'version.txt')
-    log_message(f"Checking for version file at mount point: {version_file}", level="DEBUG")
-
-    if not os.path.exists(version_file):
-        try:
-            timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-            content = (
-                f"MediaHub Rclone Mount Verification File\n"
-                f"Created: {timestamp}\n"
-                f"Mount Point: {mount_point}\n"
-                f"Monitored Directory: {directory}"
-            )
-            with open(version_file, 'w') as f:
-                f.write(content)
-            log_message(f"Successfully created version.txt in mount point {mount_point}", level="INFO")
-            return True
-        except Exception as e:
-            log_message(f"Failed to create version.txt in mount point {mount_point}: {str(e)}", level="ERROR")
-            return False
-    else:
-        log_message(f"Version file already exists at mount point {mount_point}", level="DEBUG")
-    return True
 
 def scan_directories(dirs_to_watch, current_files):
     """Scans directories for new or removed files."""
@@ -219,21 +194,34 @@ def process_changes(current_files, new_files, dest_dir):
 
         if removed_files:
             log_message(f"Detected {len(removed_files)} removed files from {directory}: {removed_files}", level="INFO")
-
-    log_message(f"Checking for broken symlinks in {dest_dir}", level="DEBUG")
-    delete_broken_symlinks(dest_dir)
+            for removed_file in removed_files:
+                removed_file_path = os.path.join(directory, removed_file)
+                log_message(f"Checking for broken symlink for removed file: {removed_file_path}", level="DEBUG")
+                delete_broken_symlinks(dest_dir, removed_file_path)
 
 def process_file(file_path):
-    """Processes individual files by checking the database and invoking media processing."""
-    log_message(f"Processing file: {file_path}", level="INFO")
+    """
+    Processes individual files by checking the database and creating symlinks.
+    Only handles the symlink creation without triggering the full main function.
+    """
     if not check_file_in_db(file_path):
-        log_message(f"File not found in database. Initiating processing for: {file_path}", level="DEBUG")
+        log_message(f"File not found in database. Initiating processing for: {file_path}", level="INFO")
+
         try:
-            subprocess.run(['python3', 'MediaHub/main.py', file_path, '--auto-select'], check=True)
-        except subprocess.CalledProcessError as e:
-            log_message(f"Failed to process file: {e}", level="ERROR")
+            # Get source and destination directories
+            src_dirs, dest_dir = get_directories()
+            if not src_dirs or not dest_dir:
+                log_message("Source or destination directory not set in environment variables", level="ERROR")
+                return
+
+            # Call create_symlinks with the specific file path
+            create_symlinks(src_dirs=src_dirs, dest_dir=dest_dir, auto_select=True, single_path=file_path, force=False, mode='monitor')
+            log_message(f"Symlink monitoring completed for {file_path}", level="INFO")
+
+        except Exception as e:
+            log_message(f"Failed to process file: {file_path}. Error: {e}", level="ERROR")
     else:
-        log_message(f"File already exists in the database: {file_path}", level="DEBUG")
+        log_message(f"File already exists in the database: {file_path}", level="WARNING")
 
 def initial_scan(dirs_to_watch):
     """Performs an initial scan of directories to capture the current state of files."""
@@ -275,7 +263,6 @@ def main():
 
     # Get configuration from environment
     sleep_time = int(os.getenv('SLEEP_TIME', 60))
-    #mount_check_interval = int(os.getenv('MOUNT_CHECK_INTERVAL', 30))
 
     current_files = {}
     while True:
@@ -285,8 +272,6 @@ def main():
                 if mount_state is not False:
                     log_message("Mount not available, waiting for rclone mount...", level="INFO")
                     mount_state = False
-                #return False, False
-                #time.sleep(mount_check_interval)
                 time.sleep(is_mount_check_interval())
                 continue
 

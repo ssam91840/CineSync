@@ -1,19 +1,26 @@
 import argparse
 import subprocess
 import os
+import sys
 import platform
 import time
 import psutil
 import signal
-from config.config import *
-from processors.symlink_creator import create_symlinks
-from utils.logging_utils import log_message
-from processors.db_utils import *
-from processors.symlink_creator import *
-from monitor.polling_monitor import *
+
+# Append the parent directory to the system path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Local imports from MediaHub
+from MediaHub.config.config import *
+from MediaHub.processors.symlink_creator import create_symlinks
+from MediaHub.utils.logging_utils import log_message
+from MediaHub.processors.db_utils import *
+from MediaHub.processors.symlink_creator import *
+from MediaHub.monitor.polling_monitor import *
 
 db_initialized = False
 
+POLLING_MONITOR_PATH = os.path.join(os.path.dirname(__file__), 'monitor', 'polling_monitor.py')
 LOCK_FILE = '/tmp/polling_monitor.lock' if platform.system() != 'Windows' else 'C:\\temp\\polling_monitor.lock'
 LOCK_TIMEOUT = 3600
 
@@ -139,7 +146,7 @@ def start_polling_monitor():
     try:
         # Use python or python3 depending on the platform
         python_command = 'python' if platform.system() == 'Windows' else 'python3'
-        subprocess.run([python_command, 'MediaHub/monitor/polling_monitor.py'], check=True)
+        subprocess.run([python_command, POLLING_MONITOR_PATH], check=True)
     except subprocess.CalledProcessError as e:
         log_message(f"Error running monitor script: {e}", level="ERROR")
     finally:
@@ -149,18 +156,89 @@ def main(dest_dir):
     parser = argparse.ArgumentParser(description="Create symlinks for files from src_dirs in dest_dir.")
     parser.add_argument("--auto-select", action="store_true", help="Automatically chooses the first option without prompting the user")
     parser.add_argument("single_path", nargs="?", help="Single path to process instead of using SOURCE_DIRS from environment variables")
+    parser.add_argument("--force", action="store_true", help="Force recreate symlinks even if they already exist")
+
+    db_group = parser.add_argument_group('Database Management')
+    db_group.add_argument("--reset", action="store_true",
+                         help="Reset the database to its initial state")
+    db_group.add_argument("--status", action="store_true",
+                         help="Display database statistics")
+    db_group.add_argument("--vacuum", action="store_true",
+                         help="Perform database vacuum to optimize storage and performance")
+    db_group.add_argument("--verify", action="store_true",
+                         help="Verify database integrity and check for corruption")
+    db_group.add_argument("--export", metavar="FILE",
+                         help="Export database contents to a CSV file")
+    db_group.add_argument("--import", metavar="FILE", dest="import_file",
+                         help="Import database contents from a CSV file")
+    db_group.add_argument("--search", metavar="PATTERN",
+                         help="Search for files in database matching the given pattern")
+    db_group.add_argument("--optimize", action="store_true",
+                         help="Optimize database indexes and analyze tables")
+
     args = parser.parse_args()
+
+    if args.vacuum:
+        vacuum_database()
+        return
+
+    if args.verify:
+        verify_database_integrity()
+        return
+
+    if args.export:
+        export_database(args.export)
+        return
+
+    if args.import_file:
+        import_database(args.import_file)
+        return
+
+    if args.search:
+        search_database(args.search)
+        return
+
+    if args.optimize:
+        optimize_database()
+        return
+
+    if args.reset:
+        if input("Are you sure you want to reset the database? This will delete all entries. (Y/N): ").lower() == 'y':
+            reset_database()
+            return
+
+    if args.status:
+        stats = get_database_stats()
+        if stats:
+            log_message("Database Statistics:", level="INFO")
+            log_message(f"Total Records: {stats['total_records']}", level="INFO")
+            log_message(f"Archived Records: {stats['archived_records']}", level="INFO")
+            log_message(f"Main DB Size: {stats['main_db_size']:.2f} MB", level="INFO")
+            log_message(f"Archive DB Size: {stats['archive_db_size']:.2f} MB", level="INFO")
+        return
 
     if not os.path.exists(LOCK_FILE):
         # Wait for mount if needed and initialize database
         initialize_db_with_mount_check()
 
-        # Log database import message
-        log_message("Database import completed.", level="INFO")
+        # Define the callback function to be called once the background task finishes
+        def on_missing_files_check_done():
+            log_message("Database import completed.", level="INFO")
 
-        # Wait for mount if needed and display missing files
-        display_missing_files_with_mount_check(dest_dir)
-        log_message("Database import completed.", level="INFO")
+        # Function to run the missing files check and call the callback when done
+        def display_missing_files_with_callback(dest_dir, callback):
+            display_missing_files_with_mount_check(dest_dir)
+            callback()
+
+        # Run missing files check in a separate thread
+        missing_files_thread = threading.Thread(target=display_missing_files_with_callback, args=(dest_dir, on_missing_files_check_done))
+        missing_files_thread.daemon = False
+        missing_files_thread.start()
+
+        #Symlink cleanup
+        cleanup_thread = threading.Thread(target=run_symlink_cleanup, args=(dest_dir,))
+        cleanup_thread.daemon = False
+        cleanup_thread.start()
 
     src_dirs, dest_dir = get_directories()
     if not src_dirs or not dest_dir:
@@ -171,8 +249,14 @@ def main(dest_dir):
     if is_rclone_mount_enabled() and not check_rclone_mount():
         wait_for_mount()
 
-    create_symlinks(src_dirs, dest_dir, auto_select=args.auto_select, single_path=args.single_path)
-    start_polling_monitor()
+    # Start polling monitor in main thread
+    monitor_thread = threading.Thread(target=start_polling_monitor)
+    monitor_thread.daemon = False
+    monitor_thread.start()
+    time.sleep(2)
+
+    create_symlinks(src_dirs, dest_dir, auto_select=args.auto_select, single_path=args.single_path, force=args.force, mode='create')
+    monitor_thread.join()
 
 if __name__ == "__main__":
     setup_signal_handlers()

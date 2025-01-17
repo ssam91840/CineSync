@@ -2,7 +2,7 @@ import os
 import sys
 import requests
 from dotenv import load_dotenv
-from utils.logging_utils import log_message
+from MediaHub.utils.logging_utils import log_message
 
 api_key = None
 api_warning_logged = False
@@ -61,6 +61,12 @@ def get_directories():
 def is_tmdb_folder_id_enabled():
     return os.getenv('TMDB_FOLDER_ID', 'true').lower() in ['true', '1', 'yes']
 
+def is_imdb_folder_id_enabled():
+    return os.getenv('IMDB_FOLDER_ID', 'false').lower() == 'true'
+
+def is_tvdb_folder_id_enabled():
+    return os.getenv('TVDB_FOLDER_ID', 'false').lower() == 'true'
+
 def is_rename_enabled():
     return os.getenv('RENAME_ENABLED', 'false').lower() in ['true', '1', 'yes']
 
@@ -73,9 +79,6 @@ def is_skip_extras_folder_enabled():
 def get_extras_max_size_mb():
     return int(os.getenv('EXTRAS_MAX_SIZE_MB', '100'))
 
-def is_imdb_folder_id_enabled():
-    return os.getenv('IMDB_FOLDER_ID', 'false').lower() == 'true'
-
 def is_source_structure_enabled():
     return os.getenv('USE_SOURCE_STRUCTURE', 'false').lower() == 'true'
 
@@ -87,3 +90,61 @@ def is_rclone_mount_enabled():
 
 def is_mount_check_interval():
     return int(os.getenv('MOUNT_CHECK_INTERVAL', '30'))
+
+def is_anime_scan():
+    return os.getenv('ANIME_SCAN', 'false').lower() == 'true'
+
+def is_cinesync_layout_enabled():
+    return os.getenv('CINESYNC_LAYOUT', 'false').lower() == 'true'
+
+def custom_show_layout():
+    token = os.getenv('CUSTOM_SHOW_FOLDER', None)
+    return token
+
+def custom_movie_layout():
+    token = os.getenv('CUSTOM_MOVIE_FOLDER', None)
+    return token
+
+def custom_anime_movie_layout():
+    token = os.getenv('CUSTOM_ANIME_MOVIE_FOLDER', None)
+    return token
+
+def custom_anime_show_layout():
+    token = os.getenv('CUSTOM_ANIME_SHOW_FOLDER', None)
+    return token
+
+def get_rename_tags():
+    tags = os.getenv('RENAME_TAGS', '').split(',')
+    return [tag.strip() for tag in tags if tag.strip()]
+
+def plex_update():
+    return os.getenv('ENABLE_PLEX_UPDATE', 'false').lower() == 'true'
+
+def plex_token():
+    token = os.getenv('PLEX_TOKEN', None)
+    return token
+
+def plex_url():
+    token = os.getenv('PLEX_URL', None)
+    return token
+
+def get_known_types(filename=None):
+    known_types = set(ext.strip().lower() for ext in os.getenv('ALLOWED_EXTENSIONS', '.mkv,.mp4').split(','))
+    if filename is not None:
+        if not filename:
+            return False
+        _, ext = os.path.splitext(filename.lower())
+        return ext in known_types
+    return known_types
+
+def is_show_resolution_structure_enabled():
+    """Check if resolution structure is enabled in configuration"""
+    return os.getenv('SHOW_RESOLUTION_STRUCTURE', 'false').lower() == 'true'
+
+def is_movie_resolution_structure_enabled():
+    """Check if resolution structure is enabled in configuration"""
+    return os.getenv('MOVIE_RESOLUTION_STRUCTURE', 'false').lower() == 'true'
+
+def is_anime_separation_enabled():
+    """Check if anime content should be separated into different folders"""
+    return os.getenv('ANIME_SEPARATION', 'false').lower() == 'true'
