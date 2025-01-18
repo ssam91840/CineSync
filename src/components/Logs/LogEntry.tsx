@@ -57,9 +57,6 @@ const LogEntry: React.FC<Props> = ({ log }) => {
             <span className={`text-xs font-medium px-2 py-1 rounded-full ${getSourceBadgeColor()}`}>
               {log.source}
             </span>
-            <span className="text-sm text-gray-400">
-              {new Date(log.timestamp).toLocaleString()}
-            </span>
           </div>
           <p className="text-gray-200">{log.message}</p>
           {log.details && (

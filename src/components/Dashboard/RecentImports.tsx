@@ -1,13 +1,15 @@
-import React, { useEffect, useState, useCallback } from 'react';
+import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Calendar, FolderOpen, AlertCircle, Loader2 } from 'lucide-react';
 import { searchMedia, getMoviePosterUrl } from '../../utils/tmdb';
 import PosterGrid from './PosterGrid';
 import type { FileInfo } from '../../utils/fileSystem';
 import type { MovieInfo } from '../../types';
+import { motion, AnimatePresence } from 'framer-motion';
 
 interface Props {
   files: FileInfo[];
   isScanning: boolean;
+  isRefreshing: boolean;
 }
 
 const MEDIA_EXTENSIONS = new Set(['.mp4', '.mkv', '.avi', '.mov', '.m4v']);
@@ -22,23 +24,30 @@ const getParentFolderName = (path: string): string => {
   return parts[parts.length - 2] || '';
 };
 
-export default function RecentImports({ files, isScanning }: Props) {
+export default function RecentImports({ files, isScanning, isRefreshing }: Props) {
   const [movieInfo, setMovieInfo] = useState<MovieInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const processedFoldersRef = useRef<Map<string, MovieInfo>>(new Map());
 
-  const processFiles = useCallback(async () => {
+  const processFiles = useCallback(async (filesToProcess: FileInfo[]) => {
     try {
-      setLoading(true);
-      setMovieInfo([]); // Clear existing movies for smooth transition
+      const mediaFiles = filesToProcess
+        .filter(file => file.type === 'file' && isMediaFile(file.name))
+        // Sort by modified date descending (newest first)
+        .sort((a, b) => {
+          const dateA = a.modifiedAt ? new Date(a.modifiedAt).getTime() : 0;
+          const dateB = b.modifiedAt ? new Date(b.modifiedAt).getTime() : 0;
+          return dateB - dateA;
+        });
 
-      const mediaFiles = files.filter(file => file.type === 'file' && isMediaFile(file.name));
-      const mediaParentFolders = new Map<string, FileInfo>();
-      
+      const folderGroups = new Map<string, FileInfo>();
+
+      // Group files by parent folder
       mediaFiles.forEach(file => {
         const parentFolder = getParentFolderName(file.path);
-        if (parentFolder && !mediaParentFolders.has(parentFolder)) {
-          mediaParentFolders.set(parentFolder, {
+        if (parentFolder && !folderGroups.has(parentFolder)) {
+          folderGroups.set(parentFolder, {
             ...file,
             name: parentFolder,
             type: 'directory'
@@ -46,11 +55,14 @@ export default function RecentImports({ files, isScanning }: Props) {
         }
       });
 
-      const enhancedFiles = await Promise.all(
-        Array.from(mediaParentFolders.values()).map(async (file) => {
-          const mediaInfo = await searchMedia(file.name);
+      // Process each unprocessed folder
+      const newMovieInfos: MovieInfo[] = [];
+      for (const [folder, file] of folderGroups) {
+        // Skip if we've already processed this folder recently
+        if (!processedFoldersRef.current.has(folder)) {
+          const mediaInfo = await searchMedia(folder);
           if (mediaInfo) {
-            return {
+            const movieInfo: MovieInfo = {
               ...file,
               posterUrl: getMoviePosterUrl(mediaInfo.poster_path),
               rating: mediaInfo.vote_average,
@@ -58,28 +70,63 @@ export default function RecentImports({ files, isScanning }: Props) {
               mediaType: mediaInfo.media_type as 'movie' | 'tv',
               addedAt: file.modifiedAt ? new Date(file.modifiedAt) : new Date()
             };
+            processedFoldersRef.current.set(folder, movieInfo);
+            newMovieInfos.push(movieInfo);
           }
-          return null;
-        })
-      );
+        }
+      }
 
-      const validEntries = enhancedFiles
-        .filter((entry): entry is MovieInfo => entry !== null)
-        .sort((a, b) => (b.addedAt?.getTime() || 0) - (a.addedAt?.getTime() || 0));
-
-      setMovieInfo(validEntries);
+      if (newMovieInfos.length > 0) {
+        setMovieInfo(prev => {
+          const newMovies = [...prev];
+          newMovieInfos.forEach(newMovie => {
+            // Remove existing entry if present
+            const existingIndex = newMovies.findIndex(m => m.path === newMovie.path);
+            if (existingIndex !== -1) {
+              newMovies.splice(existingIndex, 1);
+            }
+            // Add new movie at the beginning
+            newMovies.unshift(newMovie);
+          });
+          return newMovies;
+        });
+      }
     } catch (error) {
+      console.error('Error processing files:', error);
       setError(error instanceof Error ? error.message : 'Failed to process files');
     } finally {
       setLoading(false);
     }
+  }, []);
+
+  // Initial processing
+  useEffect(() => {
+    if (files.length > 0) {
+      processFiles(files);
+    }
+  }, []);
+
+  // Process new files
+  useEffect(() => {
+    const newFiles = files.filter(file => {
+      const parentFolder = getParentFolderName(file.path);
+      return !processedFoldersRef.current.has(parentFolder);
+    });
+
+    if (newFiles.length > 0) {
+      processFiles(newFiles);
+    }
+  }, [files, processFiles]);
+
+  // Clean up removed files
+  useEffect(() => {
+    setMovieInfo(prev => {
+      const currentPaths = new Set(files.map(f => getParentFolderName(f.path)));
+      return prev.filter(movie => currentPaths.has(getParentFolderName(movie.path)));
+    });
   }, [files]);
 
-  useEffect(() => {
-    processFiles();
-  }, [processFiles]);
-
-  if (loading) {
+  if (loading && !isRefreshing) {
     return (
       <div className="bg-gray-800 rounded-xl p-6">
         <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
@@ -101,48 +148,57 @@ export default function RecentImports({ files, isScanning }: Props) {
     );
   }
 
-  if (error) {
-    return (
-      <div className="bg-gray-800 rounded-xl p-6">
-        <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
-          <AlertCircle className="h-5 w-5 text-red-400" />
-          Error Loading Library
-        </h2>
-        <p className="text-red-400">{error}</p>
-      </div>
-    );
-  }
-
   return (
     <div className="bg-gray-800 rounded-xl p-6">
       <h2 className="text-xl font-semibold mb-6 flex items-center gap-2">
         <Calendar className="h-5 w-5 text-indigo-400" />
         Media Library
-        {isScanning && (
-          <span className="ml-2 text-sm text-indigo-400 flex items-center gap-2">
+        {(isScanning || isRefreshing) && (
+          <motion.span 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="ml-2 text-sm text-indigo-400 flex items-center gap-2"
+          >
             <Loader2 className="h-4 w-4 animate-spin" />
-            Updating...
-          </span>
+            {isScanning ? 'Scanning...' : 'Refreshing...'}
+          </motion.span>
         )}
       </h2>
 
-      {movieInfo.length > 0 ? (
-        <div className="relative">
-          <div className="overflow-x-auto scrollbar-hide snap-x snap-mandatory">
-            <PosterGrid movies={movieInfo} />
+      <AnimatePresence mode="wait">
+        {error ? (
+          <motion.div
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 10 }}
+            className="flex items-center gap-2 text-red-400"
+          >
+            <AlertCircle className="h-5 w-5" />
+            {error}
+          </motion.div>
+        ) : movieInfo.length > 0 ? (
+          <div className="relative">
+            <div className="overflow-x-auto scrollbar-hide snap-x snap-mandatory">
+              <PosterGrid movies={movieInfo} />
+            </div>
+            <div className="absolute left-0 top-0 bottom-4 w-8 bg-gradient-to-r from-gray-800 to-transparent pointer-events-none" />
+            <div className="absolute right-0 top-0 bottom-4 w-8 bg-gradient-to-l from-gray-800 to-transparent pointer-events-none" />
           </div>
-          <div className="absolute left-0 top-0 bottom-4 w-8 bg-gradient-to-r from-gray-800 to-transparent pointer-events-none" />
-          <div className="absolute right-0 top-0 bottom-4 w-8 bg-gradient-to-l from-gray-800 to-transparent pointer-events-none" />
-        </div>
-      ) : (
-        <div className="flex flex-col items-center justify-center py-12 text-gray-400">
-          <FolderOpen className="h-16 w-16 mb-4" />
-          <p className="text-lg font-medium mb-2">No Media Found</p>
-          <p className="text-sm text-center">
-            Start scanning your media library to see content here.
-          </p>
-        </div>
-      )}
+        ) : (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="flex flex-col items-center justify-center py-12 text-gray-400"
+          >
+            <FolderOpen className="h-16 w-16 mb-4" />
+            <p className="text-lg font-medium mb-2">No Media Found</p>
+            <p className="text-sm text-center">
+              Start scanning your media library to see content here.
+            </p>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }

@@ -1,9 +1,8 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef } from 'react';
 import { Loader2, HardDrive, AlertCircle, Clock } from 'lucide-react';
-import type { ScanStatus as ScanStatusType } from '../../types';
-import { getEnvironmentValue } from '../../utils/environment';
+import LogOutput from './LogOutput';
 import ScanProgress from './ScanProgress';
-import ScanOutput from './ScanOutput';
+import type { ScanStatus as ScanStatusType } from '../../types';
 
 interface Props {
   onScanComplete?: () => void;
@@ -13,36 +12,21 @@ interface Props {
 }
 
 export default function ScanStatus({ onScanComplete, isScanning, onScanStart, lastScan }: Props) {
-  const [status, setStatus] = useState<ScanStatusType | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
   const [progress, setProgress] = useState(0);
+  const eventSourceRef = useRef<EventSource | null>(null);
+
+  const cleanupEventSource = () => {
+    if (eventSourceRef.current) {
+      eventSourceRef.current.close();
+      eventSourceRef.current = null;
+    }
+  };
 
   useEffect(() => {
-    const checkStatus = async () => {
-      const destinationDir = getEnvironmentValue('DESTINATION_DIR');
-      if (!destinationDir) {
-        setError('Destination directory not configured');
-        return;
-      }
-
-      if (isScanning) {
-        // Simulate progress updates
-        const interval = setInterval(() => {
-          setProgress(prev => {
-            const next = prev + Math.random() * 5;
-            return next > 100 ? 100 : next;
-          });
-        }, 500);
-
-        return () => clearInterval(interval);
-      } else {
-        setProgress(0);
-      }
-    };
-
-    checkStatus();
-  }, [isScanning]);
+    return () => cleanupEventSource();
+  }, []);
 
   const handleScanClick = async () => {
     setError(null);
@@ -50,7 +34,8 @@ export default function ScanStatus({ onScanComplete, isScanning, onScanStart, la
     setProgress(0);
     
     try {
-      // Start the Python script
+      cleanupEventSource();
+
       const response = await fetch('http://localhost:3001/api/scan/start', {
         method: 'POST'
       });
@@ -59,22 +44,21 @@ export default function ScanStatus({ onScanComplete, isScanning, onScanStart, la
         throw new Error('Failed to start scan');
       }
 
-      // Set up SSE connection for real-time logs
-      const eventSource = new EventSource('http://localhost:3001/api/scan/logs');
+      eventSourceRef.current = new EventSource('http://localhost:3001/api/scan/logs');
       
-      eventSource.onmessage = (event) => {
-        const log = event.data;
-        setLogs((prevLogs) => [...prevLogs, log]);
+      eventSourceRef.current.onmessage = (event) => {
+        setLogs((prevLogs) => [...prevLogs, event.data]);
       };
 
-      eventSource.onerror = () => {
-        eventSource.close();
+      eventSourceRef.current.onerror = () => {
+        cleanupEventSource();
       };
 
       await onScanStart();
     } catch (error) {
       console.error('Scan failed:', error);
       setError('Failed to start scan');
+      cleanupEventSource();
     }
   };
 
@@ -85,18 +69,6 @@ export default function ScanStatus({ onScanComplete, isScanning, onScanStart, la
       timeStyle: 'short'
     }).format(date);
   };
-
-  if (error) {
-    return (
-      <div className="bg-gray-800 rounded-xl p-6">
-        <div className="flex items-center gap-2 text-red-400 mb-4">
-          <AlertCircle className="h-5 w-5" />
-          <h2 className="text-xl font-semibold">Scan Status</h2>
-        </div>
-        <p className="text-red-400">{error}</p>
-      </div>
-    );
-  }
 
   return (
     <div className="bg-gray-800 rounded-xl p-6">
@@ -137,9 +109,12 @@ export default function ScanStatus({ onScanComplete, isScanning, onScanStart, la
           </div>
         )}
 
-        {/* Log Output Box */}
         {(logs.length > 0 || isScanning) && (
-          <ScanOutput logs={logs} />
+          <LogOutput 
+            logs={logs}
+            maxHeight="300px"
+            className="mt-4"
+          />
         )}
       </div>
     </div>

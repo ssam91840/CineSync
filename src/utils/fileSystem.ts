@@ -7,7 +7,16 @@ export interface FileInfo {
   type: 'file' | 'directory';
   size?: number;
   modifiedAt?: Date;
+  symlinkPath?: string;
+  error?: string;
 }
+
+export const VIDEO_EXTENSIONS = new Set(['.mp4', '.mkv', '.avi', '.mov', '.m4v']);
+
+export const isVideoFile = (filename: string): boolean => {
+  const ext = filename.toLowerCase().slice(filename.lastIndexOf('.'));
+  return VIDEO_EXTENSIONS.has(ext);
+};
 
 export const scanDirectory = async (path: string, recursive: boolean = true): Promise<FileInfo[]> => {
   try {
@@ -30,26 +39,32 @@ export const scanDirectory = async (path: string, recursive: boolean = true): Pr
     }
     
     const data = await response.json();
-    debug('Scan response:', data);
     
-    if (!Array.isArray(data)) {
-      throw new Error('Invalid response format from scan endpoint');
-    }
-    
-    // Transform the data to match FileInfo interface
-    const files: FileInfo[] = data.map(file => ({
-      name: file.name,
-      path: file.path,
-      type: file.type,
-      size: file.size,
-      modifiedAt: file.modifiedAt ? new Date(file.modifiedAt) : undefined
-    }));
+    // Filter to only include video files
+    const files: FileInfo[] = data
+      .filter((file: any) => {
+        // Only include files with video extensions
+        if (file.type === 'file') {
+          const ext = file.name.toLowerCase().slice(file.name.lastIndexOf('.'));
+          return VIDEO_EXTENSIONS.has(ext);
+        }
+        return false;
+      })
+      .map((file: any) => ({
+        name: file.name,
+        path: file.path,
+        type: 'file',
+        size: file.size,
+        modifiedAt: file.modifiedAt ? new Date(file.modifiedAt) : undefined,
+        symlinkPath: file.symlinkPath,
+        error: file.error
+      }));
 
-    debug('Processed files:', files.length);
+    debug('Processed video files:', files.length);
     return files;
   } catch (error) {
     debug('Error scanning directory:', error);
-    throw error; // Re-throw to handle in component
+    throw error;
   }
 };
 

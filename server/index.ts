@@ -38,8 +38,10 @@ addLog({
 
 // Endpoint to start the Python scan
 app.post('/api/scan/start', (req, res) => {
+  // If there's an existing scan process, kill it
   if (scanProcess) {
-    return res.status(400).json({ error: 'Scan already in progress' });
+    scanProcess.kill();
+    scanProcess = null;
   }
 
   // Set headers for SSE
