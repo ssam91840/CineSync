@@ -52,3 +52,22 @@ export interface LogEntry {
   details?: string;
   source: 'system' | 'scan' | 'symlink';
 }
+
+export interface MovieInfo extends FileInfo {
+  posterUrl?: string;
+  rating?: number;
+  year?: string;
+  mediaType: 'movie' | 'tv';
+  addedAt: Date;
+  tmdbId?: number;
+}
+
+export interface FileInfo {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  size?: number;
+  modifiedAt?: Date;
+  symlinkPath?: string;
+  error?: string;
+}

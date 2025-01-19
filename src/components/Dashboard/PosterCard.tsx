@@ -9,6 +9,8 @@ interface MovieCardProps {
   rating?: number;
   year?: string;
   mediaType?: 'movie' | 'tv';
+  tmdbId?: number;
+  onClick?: () => void;
 }
 
 export default function MovieCard({ 
@@ -16,7 +18,8 @@ export default function MovieCard({
   posterUrl, 
   rating, 
   year, 
-  mediaType = 'movie' 
+  mediaType = 'movie',
+  onClick
 }: MovieCardProps) {
   const { getCachedPoster, cachePoster } = usePosterCache();
   const cachedPosterUrl = posterUrl ? getCachedPoster(posterUrl) : null;
@@ -28,7 +31,10 @@ export default function MovieCard({
   };
 
   return (
-    <div className="group relative rounded-lg overflow-hidden bg-gray-800 shadow-lg">
+    <div 
+      className="group relative rounded-lg overflow-hidden bg-gray-800 shadow-lg cursor-pointer transform transition-transform hover:scale-105"
+      onClick={onClick}
+    >
       {/* Media Type Badge */}
       <div className="absolute top-2 left-2 z-10">
         <span className={`text-white text-xs px-2 py-1 rounded-md font-medium flex items-center gap-1

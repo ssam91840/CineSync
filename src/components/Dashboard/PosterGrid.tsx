@@ -4,7 +4,7 @@ import PosterCard from './PosterCard';
 import type { MovieInfo } from '../../types';
 
 interface Props {
-  movies: MovieInfo[];
+  movies: (MovieInfo & { onClick?: () => void })[];
 }
 
 const container = {
@@ -54,6 +54,7 @@ export default function MovieGrid({ movies }: Props) {
             rating={movie.rating}
             year={movie.year}
             mediaType={movie.mediaType}
+            onClick={movie.onClick}
           />
         </motion.div>
       ))}

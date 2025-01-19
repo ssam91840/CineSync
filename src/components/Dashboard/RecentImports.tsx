@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from 'react';
 import { Calendar, FolderOpen, AlertCircle, Loader2 } from 'lucide-react';
 import { searchMedia, getMoviePosterUrl } from '../../utils/tmdb';
 import PosterGrid from './PosterGrid';
+import MovieDetailsModal from '../MovieDetails/MovieDetailsModal';
 import type { FileInfo } from '../../utils/fileSystem';
 import type { MovieInfo } from '../../types';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -29,12 +30,12 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const processedFoldersRef = useRef<Map<string, MovieInfo>>(new Map());
+  const [selectedMovieId, setSelectedMovieId] = useState<number | null>(null);
 
   const processFiles = useCallback(async (filesToProcess: FileInfo[]) => {
     try {
       const mediaFiles = filesToProcess
         .filter(file => file.type === 'file' && isMediaFile(file.name))
-        // Sort by modified date descending (newest first)
         .sort((a, b) => {
           const dateA = a.modifiedAt ? new Date(a.modifiedAt).getTime() : 0;
           const dateB = b.modifiedAt ? new Date(b.modifiedAt).getTime() : 0;
@@ -43,7 +44,6 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
 
       const folderGroups = new Map<string, FileInfo>();
 
-      // Group files by parent folder
       mediaFiles.forEach(file => {
         const parentFolder = getParentFolderName(file.path);
         if (parentFolder && !folderGroups.has(parentFolder)) {
@@ -55,10 +55,8 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
         }
       });
 
-      // Process each unprocessed folder
       const newMovieInfos: MovieInfo[] = [];
       for (const [folder, file] of folderGroups) {
-        // Skip if we've already processed this folder recently
         if (!processedFoldersRef.current.has(folder)) {
           const mediaInfo = await searchMedia(folder);
           if (mediaInfo) {
@@ -68,7 +66,8 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
               rating: mediaInfo.vote_average,
               year: (mediaInfo.release_date || mediaInfo.first_air_date)?.split('-')[0],
               mediaType: mediaInfo.media_type as 'movie' | 'tv',
-              addedAt: file.modifiedAt ? new Date(file.modifiedAt) : new Date()
+              addedAt: file.modifiedAt ? new Date(file.modifiedAt) : new Date(),
+              tmdbId: mediaInfo.id
             };
             processedFoldersRef.current.set(folder, movieInfo);
             newMovieInfos.push(movieInfo);
@@ -80,12 +79,10 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
         setMovieInfo(prev => {
           const newMovies = [...prev];
           newMovieInfos.forEach(newMovie => {
-            // Remove existing entry if present
             const existingIndex = newMovies.findIndex(m => m.path === newMovie.path);
             if (existingIndex !== -1) {
               newMovies.splice(existingIndex, 1);
             }
-            // Add new movie at the beginning
             newMovies.unshift(newMovie);
           });
           return newMovies;
@@ -99,14 +96,12 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
     }
   }, []);
 
-  // Initial processing
   useEffect(() => {
     if (files.length > 0) {
       processFiles(files);
     }
   }, []);
 
-  // Process new files
   useEffect(() => {
     const newFiles = files.filter(file => {
       const parentFolder = getParentFolderName(file.path);
@@ -118,13 +113,16 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
     }
   }, [files, processFiles]);
 
-  // Clean up removed files
   useEffect(() => {
     setMovieInfo(prev => {
       const currentPaths = new Set(files.map(f => getParentFolderName(f.path)));
       return prev.filter(movie => currentPaths.has(getParentFolderName(movie.path)));
     });
   }, [files]);
+
+  const handleMovieClick = (movieId: number) => {
+    setSelectedMovieId(movieId);
+  };
 
   if (loading && !isRefreshing) {
     return (
@@ -180,7 +178,12 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
         ) : movieInfo.length > 0 ? (
           <div className="relative">
             <div className="overflow-x-auto scrollbar-hide snap-x snap-mandatory">
-              <PosterGrid movies={movieInfo} />
+              <PosterGrid 
+                movies={movieInfo.map(movie => ({
+                  ...movie,
+                  onClick: () => movie.tmdbId && handleMovieClick(movie.tmdbId)
+                }))} 
+              />
             </div>
             <div className="absolute left-0 top-0 bottom-4 w-8 bg-gradient-to-r from-gray-800 to-transparent pointer-events-none" />
             <div className="absolute right-0 top-0 bottom-4 w-8 bg-gradient-to-l from-gray-800 to-transparent pointer-events-none" />
@@ -199,6 +202,14 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
           </motion.div>
         )}
       </AnimatePresence>
+
+      {selectedMovieId && (
+        <MovieDetailsModal
+          movieId={selectedMovieId}
+          isOpen={true}
+          onClose={() => setSelectedMovieId(null)}
+        />
+      )}
     </div>
   );
 }
