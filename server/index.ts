@@ -4,9 +4,12 @@ import { join, resolve } from 'path';
 import cors from 'cors';
 import { spawn } from 'child_process';
 import type { LogEntry } from '../src/types';
+import { exec } from 'child_process';
+import { promisify } from 'util';
 
 const app = express();
 const PORT = 3001;
+const execAsync = promisify(exec);
 
 app.use(cors());
 app.use(express.json());
@@ -261,6 +264,30 @@ app.get('/api/files/scan', async (req, res) => {
     });
     console.error('Error scanning directory:', error);
     res.status(500).json({ error: 'Failed to scan directory' });
+  }
+});
+
+
+app.get('/api/files/readlink', async (req, res) => {
+  try {
+    const { path } = req.query;
+
+    if (!path || typeof path !== 'string') {
+      return res.status(400).json({ error: 'Path parameter is required' });
+    }
+
+    const command = `"C:\\Program Files\\Git\\bin\\bash.exe" -c 'readlink "${path.replace(/\\/g, '/')}"'`;
+
+    const { stdout } = await execAsync(command);
+    const sourcePath = stdout.trim().replace(/^\/c\//, 'C:/').replace(/\//g, '\\');
+
+    res.json({ sourcePath });
+  } catch (error) {
+    console.error('Error executing readlink:', error);
+    res.status(500).json({ 
+      error: 'Failed to resolve symlink',
+      details: error instanceof Error ? error.message : 'Unknown error'
+    });
   }
 });
 

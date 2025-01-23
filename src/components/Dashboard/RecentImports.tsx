@@ -30,7 +30,13 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const processedFoldersRef = useRef<Map<string, MovieInfo>>(new Map());
-  const [selectedMovieId, setSelectedMovieId] = useState<number | null>(null);
+  const [selectedMovie, setSelectedMovie] = useState<{
+    id: number;
+    fileInfo: {
+      sourcePath: string;
+      destinationPath: string;
+    };
+  } | null>(null);
 
   const processFiles = useCallback(async (filesToProcess: FileInfo[]) => {
     try {
@@ -120,8 +126,16 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
     });
   }, [files]);
 
-  const handleMovieClick = (movieId: number) => {
-    setSelectedMovieId(movieId);
+  const handleMovieClick = (movie: MovieInfo) => {
+    if (movie.tmdbId) {
+      setSelectedMovie({
+        id: movie.tmdbId,
+        fileInfo: {
+          sourcePath: movie.path,
+          destinationPath: movie.symlinkPath || movie.path
+        }
+      });
+    }
   };
 
   if (loading && !isRefreshing) {
@@ -181,7 +195,7 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
               <PosterGrid 
                 movies={movieInfo.map(movie => ({
                   ...movie,
-                  onClick: () => movie.tmdbId && handleMovieClick(movie.tmdbId)
+                  onClick: () => handleMovieClick(movie)
                 }))} 
               />
             </div>
@@ -203,11 +217,12 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
         )}
       </AnimatePresence>
 
-      {selectedMovieId && (
+      {selectedMovie && (
         <MovieDetailsModal
-          movieId={selectedMovieId}
+          movieId={selectedMovie.id}
           isOpen={true}
-          onClose={() => setSelectedMovieId(null)}
+          onClose={() => setSelectedMovie(null)}
+          fileInfo={selectedMovie.fileInfo}
         />
       )}
     </div>

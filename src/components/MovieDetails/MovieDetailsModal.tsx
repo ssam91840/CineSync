@@ -1,6 +1,6 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Star, Clock, DollarSign, Globe, Calendar } from 'lucide-react';
+import { X, Star, Clock, DollarSign, Globe, Calendar, FolderSymlink } from 'lucide-react';
 import { useMovieDetails } from '../../hooks/useMovieDetails';
 import CastSection from './CastSection';
 import ImageWithFallback from './ImageWithFallback';
@@ -10,10 +10,33 @@ interface Props {
   movieId: number;
   isOpen: boolean;
   onClose: () => void;
+  fileInfo?: {
+    sourcePath: string;
+    destinationPath: string;
+  };
 }
 
-export default function MovieDetailsModal({ movieId, isOpen, onClose }: Props) {
+export default function MovieDetailsModal({ movieId, isOpen, onClose, fileInfo }: Props) {
   const { data: movie, isLoading, error } = useMovieDetails(movieId);
+  const [resolvedSourcePath, setResolvedSourcePath] = useState<string | null>(null);
+
+  useEffect(() => {
+    const resolveSourcePath = async () => {
+      if (fileInfo?.destinationPath) {
+        try {
+          const response = await fetch(`http://localhost:3001/api/files/readlink?path=${encodeURIComponent(fileInfo.destinationPath)}`);
+          if (response.ok) {
+            const data = await response.json();
+            setResolvedSourcePath(data.sourcePath);
+          }
+        } catch (error) {
+          console.error('Error resolving symlink:', error);
+        }
+      }
+    };
+
+    resolveSourcePath();
+  }, [fileInfo?.destinationPath]);
 
   const formatCurrency = (amount: number) => {
     return new Intl.NumberFormat('en-US', {
@@ -144,6 +167,30 @@ export default function MovieDetailsModal({ movieId, isOpen, onClose }: Props) {
                         </div>
                       )}
 
+                      {/* File Information */}
+                      {fileInfo && (
+                        <div className="mb-6 bg-gray-800/50 rounded-lg p-4">
+                          <h3 className="text-xl font-semibold mb-4 flex items-center gap-2">
+                            <FolderSymlink className="h-5 w-5 text-indigo-400" />
+                            File Information
+                          </h3>
+                          <div className="space-y-3">
+                            <div>
+                              <label className="text-sm text-gray-400">Source Path</label>
+                              <div className="mt-1 text-sm bg-gray-900/50 p-2 rounded break-all">
+                                {resolvedSourcePath || 'Resolving source path...'}
+                              </div>
+                            </div>
+                            <div>
+                              <label className="text-sm text-gray-400">Destination Path</label>
+                              <div className="mt-1 text-sm bg-gray-900/50 p-2 rounded break-all">
+                                {fileInfo.destinationPath}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
                       {/* Financial Info */}
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
                         {movie.budget > 0 && (
@@ -191,7 +238,7 @@ export default function MovieDetailsModal({ movieId, isOpen, onClose }: Props) {
                         </div>
                       )}
                     </div>
-                  </div >
+                  </div>
 
                   {/* Cast Section */}
                   <CastSection movieId={movieId} />
