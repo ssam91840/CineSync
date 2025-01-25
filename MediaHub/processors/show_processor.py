@@ -192,7 +192,7 @@ def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enab
     if anime_result and anime_result.get('resolution'):
         resolution = anime_result['resolution']
     else:
-        resolution = extract_resolution_from_filename(file) or extract_resolution_from_folder(parent_folder_name)
+        resolution = extract_resolution_from_filename(file) or extract_resolution_from_folder(root)
         if not resolution:
             log_message(f"Resolution could not be extracted from filename or folder name. Defaulting to 'Shows'.", level="DEBUG")
             resolution = 'Shows'
@@ -236,7 +236,7 @@ def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enab
                     base_dest_path = os.path.join(dest_dir, 'CineSync', 'AnimeShows', show_folder, 'Extras')
                 else:
                     base_dest_path = os.path.join(dest_dir, 'CineSync', 'Shows', show_folder, 'Extras')
-        elif is_show_source_structure_enabled():
+        elif is_source_structure_enabled():
             if is_show_resolution_structure_enabled():
                 if is_anime_genre and is_anime_separation_enabled():
                     base_dest_path = os.path.join(dest_dir, 'CineSync', source_folder, 'AnimeShows', resolution_folder, show_folder, 'Extras')
@@ -335,7 +335,7 @@ def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enab
         return None
 
     # Extract media information and Rename files
-    media_info = extract_media_info(file, keywords)
+    media_info = extract_media_info(file, keywords, root)
     if anime_result and rename_enabled:
         dest_file = os.path.join(season_dest_path, new_name)
     else:
@@ -360,7 +360,7 @@ def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enab
                 base_name = f"{show_name} - {episode_identifier}"
 
             if is_rename_enabled() and get_rename_tags():
-                media_info = extract_media_info(file, keywords)
+                media_info = extract_media_info(file, keywords, root)
                 details = []
 
                 for tag in get_rename_tags():
