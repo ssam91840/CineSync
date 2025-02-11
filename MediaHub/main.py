@@ -12,11 +12,11 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Local imports from MediaHub
 from MediaHub.config.config import *
-from MediaHub.processors.symlink_creator import create_symlinks
 from MediaHub.utils.logging_utils import log_message
 from MediaHub.processors.db_utils import *
 from MediaHub.processors.symlink_creator import *
 from MediaHub.monitor.polling_monitor import *
+from MediaHub.processors.symlink_utils import *
 
 db_initialized = False
 
@@ -157,6 +157,10 @@ def main(dest_dir):
     parser.add_argument("--auto-select", action="store_true", help="Automatically chooses the first option without prompting the user")
     parser.add_argument("single_path", nargs="?", help="Single path to process instead of using SOURCE_DIRS from environment variables")
     parser.add_argument("--force", action="store_true", help="Force recreate symlinks even if they already exist")
+    parser.add_argument("--disable-monitor", action="store_true", help="Disable polling monitor and symlink cleanup processes")
+    parser.add_argument("--imdb", type=str, help="Direct IMDb ID for the show")
+    parser.add_argument("--tmdb", type=int, help="Direct TMDb ID for the show")
+    parser.add_argument("--tvdb", type=int, help="Direct TVDb ID for the show")
 
     db_group = parser.add_argument_group('Database Management')
     db_group.add_argument("--reset", action="store_true",
@@ -221,24 +225,30 @@ def main(dest_dir):
         # Wait for mount if needed and initialize database
         initialize_db_with_mount_check()
 
-        # Define the callback function to be called once the background task finishes
-        def on_missing_files_check_done():
-            log_message("Database import completed.", level="INFO")
+        if not args.disable_monitor:
+            log_message("Starting background processes...", level="INFO")
+            log_message("RealTime-Monitoring is enabled", level="INFO")
 
-        # Function to run the missing files check and call the callback when done
-        def display_missing_files_with_callback(dest_dir, callback):
-            display_missing_files_with_mount_check(dest_dir)
-            callback()
+            # Define the callback function to be called once the background task finishes
+            def on_missing_files_check_done():
+                log_message("Database import completed.", level="INFO")
 
-        # Run missing files check in a separate thread
-        missing_files_thread = threading.Thread(target=display_missing_files_with_callback, args=(dest_dir, on_missing_files_check_done))
-        missing_files_thread.daemon = False
-        missing_files_thread.start()
+            # Function to run the missing files check and call the callback when done
+            def display_missing_files_with_callback(dest_dir, callback):
+                display_missing_files_with_mount_check(dest_dir)
+                callback()
 
-        #Symlink cleanup
-        cleanup_thread = threading.Thread(target=run_symlink_cleanup, args=(dest_dir,))
-        cleanup_thread.daemon = False
-        cleanup_thread.start()
+            # Run missing files check in a separate thread
+            missing_files_thread = threading.Thread(target=display_missing_files_with_callback, args=(dest_dir, on_missing_files_check_done))
+            missing_files_thread.daemon = False
+            missing_files_thread.start()
+
+            #Symlink cleanup
+            cleanup_thread = threading.Thread(target=run_symlink_cleanup, args=(dest_dir,))
+            cleanup_thread.daemon = False
+            cleanup_thread.start()
+        else:
+            log_message("RealTime-Monitoring is disabled", level="INFO")
 
     src_dirs, dest_dir = get_directories()
     if not src_dirs or not dest_dir:
@@ -249,14 +259,17 @@ def main(dest_dir):
     if is_rclone_mount_enabled() and not check_rclone_mount():
         wait_for_mount()
 
-    # Start polling monitor in main thread
-    monitor_thread = threading.Thread(target=start_polling_monitor)
-    monitor_thread.daemon = False
-    monitor_thread.start()
-    time.sleep(2)
-
-    create_symlinks(src_dirs, dest_dir, auto_select=args.auto_select, single_path=args.single_path, force=args.force, mode='create')
-    monitor_thread.join()
+    # Start RealTime-Monitoring in main thread if not disabled
+    if not args.disable_monitor:
+        log_message("Starting RealTime-Monitoring...", level="INFO")
+        monitor_thread = threading.Thread(target=start_polling_monitor)
+        monitor_thread.daemon = False
+        monitor_thread.start()
+        time.sleep(2)
+        create_symlinks(src_dirs, dest_dir, auto_select=args.auto_select, single_path=args.single_path, force=args.force, mode='create', tmdb_id=args.tmdb, imdb_id=args.imdb, tvdb_id=args.tvdb)
+        monitor_thread.join()
+    else:
+        create_symlinks(src_dirs, dest_dir, auto_select=args.auto_select, single_path=args.single_path, force=args.force, mode='create', tmdb_id=args.tmdb, imdb_id=args.imdb, tvdb_id=args.tvdb)
 
 if __name__ == "__main__":
     setup_signal_handlers()

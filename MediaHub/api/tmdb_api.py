@@ -9,6 +9,8 @@ from functools import lru_cache
 from MediaHub.utils.logging_utils import log_message
 from MediaHub.config.config import get_api_key, is_imdb_folder_id_enabled, is_tvdb_folder_id_enabled, is_tmdb_folder_id_enabled
 from MediaHub.utils.file_utils import clean_query, normalize_query, standardize_title, remove_genre_names, extract_title, clean_query_movie, advanced_clean_query
+from MediaHub.api.tmdb_api_helpers import *
+
 _api_cache = {}
 
 # Global variables for API key status and warnings
@@ -18,135 +20,76 @@ api_warning_logged = False
 # Disable urllib3 debug logging
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
-def check_api_key():
-    global api_key, api_warning_logged
-    if not api_key:
-        return False
-    url = "https://api.themoviedb.org/3/configuration"
-    params = {'api_key': api_key}
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        return True
-    except requests.exceptions.RequestException as e:
-        if not api_warning_logged:
-            log_message(f"API key validation failed: {e}", level="ERROR")
-            api_warning_logged = True
-        return False
-
-def get_external_ids(item_id, media_type):
-    url = f"https://api.themoviedb.org/3/{media_type}/{item_id}/external_ids"
-    params = {'api_key': api_key}
-
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        log_message(f"Error fetching external IDs: {e}", level="ERROR")
-        return {}
-
-def get_movie_genres(movie_id):
-    """
-    Fetch genre information and other metadata for a movie from TMDb API.
-    Parameters:
-    movie_id (int): TMDb movie ID
-    Returns:
-    dict: Dictionary containing genres, language, and anime status
-    """
-    api_key = get_api_key()
-    if not api_key:
-        log_message("TMDb API key not found.", level="ERROR")
-        return None
-
-    url = f"https://api.themoviedb.org/3/movie/{movie_id}"
-    params = {'api_key': api_key}
-
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        movie_details = response.json()
-
-        genres = [genre['name'] for genre in movie_details.get('genres', [])]
-        language = movie_details.get('original_language', '')
-
-        keywords_url = f"https://api.themoviedb.org/3/movie/{movie_id}/keywords"
-        keywords_response = requests.get(keywords_url, params=params)
-        keywords_response.raise_for_status()
-        keywords = [kw['name'].lower() for kw in keywords_response.json().get('keywords', [])]
-
-        is_anime = any([
-            'anime' in movie_details.get('title', '').lower(),
-            'animation' in genres and language == 'ja',
-            'anime' in keywords,
-            'japanese animation' in keywords
-        ])
-
-        return {
-            'genres': genres,
-            'language': language,
-            'is_anime_genre': is_anime
-        }
-
-    except requests.exceptions.RequestException as e:
-        log_message(f"Error fetching movie genres: {e}", level="ERROR")
-        return None
-
-def get_show_genres(show_id):
-    """
-    Fetch genre information and other metadata for a TV show from TMDb API.
-    Parameters:
-    show_id (int): TMDb show ID
-    Returns:
-    dict: Dictionary containing genres, language, and anime status
-    """
-    api_key = get_api_key()
-    if not api_key:
-        log_message("TMDb API key not found.", level="ERROR")
-        return None
-
-    url = f"https://api.themoviedb.org/3/tv/{show_id}"
-    params = {'api_key': api_key}
-
-    try:
-        # Get show details including genres
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        show_details = response.json()
-
-        genres = [genre['name'] for genre in show_details.get('genres', [])]
-        language = show_details.get('original_language', '')
-
-        # Get keywords for the show
-        keywords_url = f"https://api.themoviedb.org/3/tv/{show_id}/keywords"
-        keywords_response = requests.get(keywords_url, params=params)
-        keywords_response.raise_for_status()
-        keywords = [kw['name'].lower() for kw in keywords_response.json().get('results', [])]
-
-        # Check if it's an anime based on multiple criteria
-        is_anime = any([
-            'anime' in show_details.get('name', '').lower(),
-            'animation' in genres and language == 'ja',
-            'anime' in keywords,
-            'japanese animation' in keywords,
-            any('anime' in keyword for keyword in keywords)
-        ])
-
-        return {
-            'genres': genres,
-            'language': language,
-            'is_anime_genre': is_anime
-        }
-
-    except requests.exceptions.RequestException as e:
-        log_message(f"Error fetching TV show genres: {e}", level="ERROR")
-        return None
-
 @lru_cache(maxsize=None)
-def search_tv_show(query, year=None, auto_select=False, actual_dir=None, file=None, root=None):
+def search_tv_show(query, year=None, auto_select=False, actual_dir=None, file=None, root=None, episode_match=None, tmdb_id=None, imdb_id=None, tvdb_id=None):
     global api_key
     if not check_api_key():
         return query
+
+    # Handle direct ID searches first
+    if tmdb_id or imdb_id or tvdb_id:
+        try:
+            if tmdb_id:
+                log_message(f"Using provided TMDB ID: {tmdb_id}", level="INFO")
+                url = f"https://api.themoviedb.org/3/tv/{tmdb_id}"
+                params = {'api_key': api_key}
+                response = requests.get(url, params=params)
+                response.raise_for_status()
+                show_data = response.json()
+
+            elif imdb_id or tvdb_id:
+                external_id_type = 'imdb_id' if imdb_id else 'tvdb_id'
+                external_id = imdb_id if imdb_id else str(tvdb_id)
+
+                url = f"https://api.themoviedb.org/3/find/{external_id}"
+                params = {
+                    'api_key': api_key,
+                    'external_source': 'imdb_id' if imdb_id else 'tvdb_id'
+                }
+                response = requests.get(url, params=params)
+                response.raise_for_status()
+                results = response.json().get('tv_results', [])
+
+                if not results:
+                    log_message(f"No show found for {external_id_type}: {external_id}", level="WARNING")
+                    return query
+
+                show_data = results[0]
+                tmdb_id = show_data['id']
+
+                # Get full show details
+                url = f"https://api.themoviedb.org/3/tv/{tmdb_id}"
+                params = {'api_key': api_key}
+                response = requests.get(url, params=params)
+                response.raise_for_status()
+                show_data = response.json()
+
+            # Process show data
+            show_name = show_data['name']
+            first_air_date = show_data.get('first_air_date', '')
+            show_year = first_air_date.split('-')[0] if first_air_date else "Unknown Year"
+
+            # Get external IDs for the show
+            external_ids = get_external_ids(tmdb_id, 'tv')
+            genre_info = get_show_genres(tmdb_id)
+            is_anime_genre = genre_info['is_anime_genre']
+
+            # Format the proper name based on settings
+            if is_imdb_folder_id_enabled():
+                imdb_id = external_ids.get('imdb_id', '')
+                proper_name = f"{show_name} ({show_year}) {{imdb-{imdb_id}}} {{tmdb-{tmdb_id}}}"
+            elif is_tvdb_folder_id_enabled():
+                tvdb_id = external_ids.get('tvdb_id', '')
+                proper_name = f"{show_name} ({show_year}) {{tvdb-{tvdb_id}}} {{tmdb-{tmdb_id}}}"
+            else:
+                proper_name = f"{show_name} ({show_year}) {{tmdb-{tmdb_id}}}"
+
+            log_message(f"Successfully retrieved show data using ID: {proper_name}", level="INFO")
+            return proper_name, show_name, is_anime_genre
+
+        except requests.exceptions.RequestException as e:
+            log_message(f"Error fetching show data: {e}", level="ERROR")
+            log_message(f"Falling back to search due to API error", level="INFO")
 
     cache_key = (query, year)
     if cache_key in _api_cache:
@@ -155,6 +98,13 @@ def search_tv_show(query, year=None, auto_select=False, actual_dir=None, file=No
     url = "https://api.themoviedb.org/3/search/tv"
 
     def fetch_results(query, year=None):
+        if isinstance(query, tuple):
+            query = query[0] if query else ""
+
+        if len(query.strip()) == 1:
+            log_message(f"Skipping API search for single-letter query: '{query}'", "DEBUG", "stdout")
+            return None
+
         params = {'api_key': api_key, 'query': query}
         full_url = f"{url}?{urllib.parse.urlencode(params)}"
         log_message(f"Primary search URL (without year): {full_url}", "DEBUG", "stdout")
@@ -188,19 +138,37 @@ def search_tv_show(query, year=None, auto_select=False, actual_dir=None, file=No
     results = fetch_results(query, year)
 
     if not results:
-        results = search_with_extracted_title(query, year)
-        log_message(f"Primary search failed, attempting with extracted title", "DEBUG", "stdout")
+        if len(query.strip()) > 1:
+            results = search_with_extracted_title(query, year)
+            log_message(f"Primary search failed, attempting with extracted title", "DEBUG", "stdout")
+        else:
+            log_message(f"Skipping extracted title search for single-letter query: '{query}'", "DEBUG", "stdout")
 
     if not results:
-        results = perform_fallback_tv_search(query, year)
+        if len(query.strip()) > 1:
+            results = perform_fallback_tv_search(query, year)
+            log_message(f"Primary search failed, attempting fallback TV search", "DEBUG", "stdout")
+        else:
+            log_message(f"Skipping fallback TV search for single-letter query: '{query}'", "DEBUG", "stdout")
 
     if not results and year:
-        results = search_fallback(query, year)
+        if len(query.strip()) > 1:
+            results = search_fallback(query, year)
+            log_message(f"TV search fallback failed, attempting final search", "DEBUG", "stdout")
+        else:
+            log_message(f"Skipping final fallback search for single-letter query: '{query}'", "DEBUG", "stdout")
 
     if not results:
-        log_message(f"Searching with Cleaned Query", "DEBUG", "stdout")
-        title = clean_query(file)
-        results = fetch_results(title, year)
+        if len(query.strip()) > 1:
+            # Search with cleaned query only if the episode pattern matches
+            if episode_match:
+                log_message(f"Searching with Cleaned Query", "DEBUG", "stdout")
+                cleaned_title, _ = clean_query(file)
+                results = fetch_results(cleaned_title, year)
+            else:
+                log_message(f"Skipping cleaned query search for non-episode file", "DEBUG", "stdout")
+        else:
+            log_message(f"Skipping cleaned query search for single-letter query: '{query}'", "DEBUG", "stdout")
 
     if not results and year:
         fallback_url = f"https://api.themoviedb.org/3/search/tv?api_key={api_key}&query={year}"
@@ -228,8 +196,14 @@ def search_tv_show(query, year=None, auto_select=False, actual_dir=None, file=No
     if not results:
         log_message(f"Searching with Advanced Query", "DEBUG", "stdout")
         dir_based_query = os.path.basename(root)
-        title = advanced_clean_query(dir_based_query)
+        title = advanced_clean_query(dir_based_query, max_words=4)
         results = fetch_results(title, year)
+
+        # If no results found with max_words=4, try again with max_words=2
+        if not results:
+            log_message(f"No results found. Retrying with more aggressive cleaning", "DEBUG", "stdout")
+            title = advanced_clean_query(dir_based_query, max_words=2)
+            results = fetch_results(title, year)
 
     if not results:
         log_message(f"No results found for query '{query}' with year '{year}'.", level="WARNING")
@@ -384,10 +358,70 @@ def perform_search(params, url):
         return []
 
 @lru_cache(maxsize=None)
-def search_movie(query, year=None, auto_select=False, actual_dir=None, file=None):
+def search_movie(query, year=None, auto_select=False, actual_dir=None, file=None, tmdb_id=None, imdb_id=None):
     global api_key
     if not check_api_key():
         return query
+
+    # Handle direct ID searches first
+    if tmdb_id or imdb_id:
+        try:
+            if tmdb_id:
+                log_message(f"Using provided TMDB ID: {tmdb_id}", level="INFO")
+                url = f"https://api.themoviedb.org/3/movie/{tmdb_id}"
+                params = {'api_key': api_key}
+                response = requests.get(url, params=params)
+                response.raise_for_status()
+                movie_data = response.json()
+
+            elif imdb_id:
+                url = f"https://api.themoviedb.org/3/find/{imdb_id}"
+                params = {
+                    'api_key': api_key,
+                    'external_source': 'imdb_id'
+                }
+                response = requests.get(url, params=params)
+                response.raise_for_status()
+                results = response.json().get('movie_results', [])
+
+                if not results:
+                    log_message(f"No movie found for IMDb ID: {imdb_id}", level="WARNING")
+                    return query
+
+                movie_data = results[0]
+                tmdb_id = movie_data['id']
+
+                # Get full movie details
+                url = f"https://api.themoviedb.org/3/movie/{tmdb_id}"
+                params = {'api_key': api_key}
+                response = requests.get(url, params=params)
+                response.raise_for_status()
+                movie_data = response.json()
+
+            # Process movie data
+            movie_name = movie_data['title']
+            release_date = movie_data.get('release_date', '')
+            movie_year = release_date.split('-')[0] if release_date else "Unknown Year"
+
+            # Get external IDs for the movie
+            external_ids = get_external_ids(tmdb_id, 'movie')
+            imdb_id = external_ids.get('imdb_id', '')
+            genre_info = get_movie_genres(tmdb_id)
+            is_anime_genre = genre_info['is_anime_genre']
+
+            if is_imdb_folder_id_enabled():
+                proper_name = f"{movie_name} ({movie_year}) {{imdb-{imdb_id}}}"
+            elif is_tmdb_folder_id_enabled():
+                proper_name = f"{movie_name} ({movie_year}) {{tmdb-{tmdb_id}}}"
+            else:
+                proper_name = f"{movie_name} ({movie_year})"
+
+            log_message(f"Successfully retrieved movie data using ID: {proper_name}", level="INFO")
+            return tmdb_id, imdb_id, movie_name, movie_year, is_anime_genre
+
+        except requests.exceptions.RequestException as e:
+            log_message(f"Error fetching movie data: {e}", level="ERROR")
+            log_message(f"Falling back to search due to API error", level="INFO")
 
     cache_key = (query, year)
     if cache_key in _api_cache:
@@ -574,106 +608,3 @@ def perform_fallback_search(query, year=None):
         log_message(f"Error during web-based fallback search: {e}", level="ERROR")
 
     return []
-
-def get_episode_name(show_id, season_number, episode_number):
-    """
-    Fetch the episode name from TMDb API for the given show, season, and episode number.
-    Fallback to map absolute episode numbers if an invalid episode is specified.
-    """
-    api_key = get_api_key()
-    if not api_key:
-        log_message("TMDb API key not found in environment variables.", level="ERROR")
-        return None
-
-    try:
-        url = f"https://api.themoviedb.org/3/tv/{show_id}/season/{season_number}/episode/{episode_number}"
-        params = {'api_key': api_key}
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        episode_data = response.json()
-        episode_name = episode_data.get('name')
-        return f"S{season_number:02d}E{episode_number:02d} - {episode_name}"
-
-    except requests.exceptions.HTTPError as e:
-        if response.status_code == 404:
-            log_message(f"Episode {episode_number} not found for season {season_number}. Falling back to season data.", level="DEBUG")
-            season_url = f"https://api.themoviedb.org/3/tv/{show_id}/season/{season_number}"
-            season_params = {'api_key': api_key}
-            try:
-                season_response = requests.get(season_url, params=season_params)
-                season_response.raise_for_status()
-                season_details = season_response.json()
-                episodes = season_details.get('episodes', [])
-                total_season_episodes = len(episodes)
-
-                if total_season_episodes == 0:
-                    log_message("No episodes found for the specified season. Ensure the season number is correct.", level="ERROR")
-                    return None
-
-                if int(episode_number) > total_season_episodes:
-                    mapped_episode_number = str((int(episode_number) % total_season_episodes) or total_season_episodes).zfill(2)
-                    log_message(
-                        f"Absolute episode {episode_number} exceeds total episodes ({total_season_episodes}) "
-                        f"for season {season_number}. Mapped to episode {mapped_episode_number}.",
-                        level="DEBUG"
-                    )
-                    mapped_url = f"https://api.themoviedb.org/3/tv/{show_id}/season/{season_number}/episode/{mapped_episode_number}"
-                    mapped_response = requests.get(mapped_url, params=params)
-                    mapped_response.raise_for_status()
-                    mapped_episode_data = mapped_response.json()
-                    mapped_episode_name = mapped_episode_data.get('name')
-                    return f"S{season_number:02d}E{mapped_episode_number} - {mapped_episode_name}"
-            except requests.exceptions.RequestException as se:
-                log_message(f"Error fetching season data: {se}", level="ERROR")
-                return None
-        else:
-            log_message(f"HTTP error occurred: {e}", level="ERROR")
-            return None
-    except requests.exceptions.RequestException as e:
-        log_message(f"Error fetching episode data: {e}", level="ERROR")
-        return None
-
-def get_movie_collection(movie_id=None, movie_title=None, year=None):
-    api_key = get_api_key()
-    if not api_key:
-        return None
-
-    if movie_id:
-        url = f"https://api.themoviedb.org/3/movie/{movie_id}"
-        params = {'api_key': api_key, 'append_to_response': 'belongs_to_collection'}
-    elif movie_title and year:
-        search_url = "https://api.themoviedb.org/3/search/movie"
-        search_params = {
-            'api_key': api_key,
-            'query': movie_title,
-            'primary_release_year': year
-        }
-        try:
-            search_response = requests.get(search_url, params=search_params)
-            search_response.raise_for_status()
-            search_results = search_response.json().get('results', [])
-
-            if search_results:
-                movie_id = search_results[0]['id']
-                url = f"https://api.themoviedb.org/3/movie/{movie_id}"
-                params = {'api_key': api_key, 'append_to_response': 'belongs_to_collection'}
-            else:
-                log_message(f"No movie found for {movie_title} ({year})", level="WARNING")
-                return None
-        except requests.exceptions.RequestException as e:
-            log_message(f"Error searching for movie: {e}", level="ERROR")
-            return None
-    else:
-        log_message("Either movie_id or (movie_title and year) must be provided", level="ERROR")
-        return None
-
-    try:
-        response = requests.get(url, params=params)
-        response.raise_for_status()
-        movie_data = response.json()
-        collection = movie_data.get('belongs_to_collection')
-        if collection:
-            return collection['name'], collection['id']
-    except requests.exceptions.RequestException as e:
-        log_message(f"Error fetching movie collection data: {e}", level="ERROR")
-    return None

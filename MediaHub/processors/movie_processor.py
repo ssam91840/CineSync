@@ -4,10 +4,11 @@ import json
 import requests
 from dotenv import load_dotenv, find_dotenv
 from MediaHub.utils.file_utils import *
-from MediaHub.api.tmdb_api import search_movie, get_movie_collection
+from MediaHub.api.tmdb_api import search_movie
 from MediaHub.utils.logging_utils import log_message
 from MediaHub.config.config import *
 from MediaHub.utils.mediainfo import *
+from MediaHub.api.tmdb_api_helpers import get_movie_collection
 
 # Global variables to track API key state
 global api_key
@@ -49,7 +50,7 @@ def should_skip_file(filename):
             continue
     return False
 
-def process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index):
+def process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index, tmdb_id=None, imdb_id=None):
     global offline_mode
 
     source_folder = os.path.basename(os.path.dirname(root))
@@ -61,8 +62,11 @@ def process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_ena
 
     movie_name, year = extract_movie_name_and_year(parent_folder_name)
     if not movie_name:
-        log_message(f"Unable to extract movie name and year from: {parent_folder_name}", level="ERROR")
-        return
+        log_message(f"Attempting secondary extraction: {parent_folder_name}", level="DEBUG")
+        movie_name, year = clean_query_movie(parent_folder_name)
+        if not movie_name:
+            log_message(f"Unable to extract movie name and year from: {parent_folder_name}", level="ERROR")
+            return
 
     movie_name = standardize_title(movie_name)
     log_message(f"Searching for movie: {movie_name} ({year})", level="DEBUG")
@@ -74,7 +78,7 @@ def process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_ena
     is_anime_genre = False
 
     if api_key and is_movie_collection_enabled():
-        result = search_movie(movie_name, year, auto_select=auto_select, actual_dir=actual_dir, file=file)
+        result = search_movie(movie_name, year, auto_select=auto_select, actual_dir=actual_dir, file=file, tmdb_id=tmdb_id, imdb_id=imdb_id)
         if isinstance(result, (tuple, dict)):
             if isinstance(result, tuple):
                 tmdb_id, imdb_id, proper_name, movie_year, is_anime_genre = result
@@ -96,7 +100,7 @@ def process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_ena
         else:
             proper_movie_name = f"{movie_name} ({year})"
     elif api_key:
-        result = search_movie(movie_name, year, auto_select=auto_select, file=file)
+        result = search_movie(movie_name, year, auto_select=auto_select, file=file, tmdb_id=tmdb_id, imdb_id=imdb_id)
         year = result[3] if result[3] is not None else year
         if isinstance(result, tuple) and len(result) == 5:
             tmdb_id, imdb_id, proper_name, movie_year, is_anime_genre = result
@@ -123,28 +127,14 @@ def process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_ena
     resolution = extract_resolution_from_filename(file)
 
     # Resolution folder determination logic
-    if 'remux' in file.lower():
-        if '2160' in file or '4k' in file.lower():
-            resolution_folder = '4KRemux'
-        elif '1080' in file:
-            resolution_folder = '1080pRemux'
-        else:
-            resolution_folder = 'MoviesRemux'
-    else:
-        resolution_folder = {
-            '2160p': 'UltraHD',
-            '1080p': 'FullHD',
-            '720p': 'SDMovies',
-            '480p': 'Retro480p',
-            'DVD': 'DVDClassics'
-        }.get(resolution.lower() if resolution else 'default_resolution', 'Movies')
+    resolution_folder = get_movie_resolution_folder(file, resolution)
 
     # Determine destination path based on various configurations
     if is_source_structure_enabled() or is_cinesync_layout_enabled():
         if collection_info and is_movie_collection_enabled():
             collection_name, collection_id = collection_info
             log_message(f"Movie belongs to collection: {collection_name}", level="INFO")
-            resolution_folder = 'Movie Collections'
+            resolution_folder = get_movie_collections_folder()
             collection_folder = f"{collection_name} {{tmdb-{collection_id}}}"
             dest_path = os.path.join(dest_dir, 'CineSync', resolution_folder ,collection_folder, movie_folder)
         else:
@@ -196,11 +186,17 @@ def process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_ena
             movie_folder = movie_folder.replace('/', '')
 
             # Set destination path for non-collection movies
-            if is_movie_resolution_structure_enabled():
-                if is_anime_genre and is_anime_separation_enabled():
-                    dest_path = os.path.join(dest_dir, 'CineSync', 'AnimeMovies', resolution_folder, movie_folder)
+            if is_cinesync_layout_enabled():
+                if is_movie_resolution_structure_enabled():
+                    if is_anime_genre and is_anime_separation_enabled():
+                        dest_path = os.path.join(dest_dir, 'CineSync', 'AnimeMovies', resolution_folder, movie_folder)
+                    else:
+                        dest_path = os.path.join(dest_dir, 'CineSync', 'Movies', resolution_folder, movie_folder)
                 else:
-                    dest_path = os.path.join(dest_dir, 'CineSync', 'Movies', resolution_folder, movie_folder)
+                    if is_anime_genre and is_anime_separation_enabled():
+                        dest_path = os.path.join(dest_dir, 'CineSync', 'AnimeMovies', movie_folder)
+                    else:
+                        dest_path = os.path.join(dest_dir, 'CineSync', 'Movies', movie_folder)
             else:
                 if is_anime_genre and is_anime_separation_enabled():
                     dest_path = os.path.join(dest_dir, 'CineSync', 'AnimeMovies', movie_folder)
@@ -211,7 +207,8 @@ def process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_ena
     def find_movie_folder_in_resolution_folders():
         if is_movie_resolution_structure_enabled():
             base_path = os.path.join(dest_dir, custom_movie_layout()) if custom_movie_layout() else os.path.join(dest_dir, 'CineSync', 'Movies')
-            for res_folder in ['UltraHD', 'FullHD', 'SDMovies', 'Retro480p', 'DVDClassics', 'Movies']:
+            resolution_folders = [get_movie_resolution_folder(file, resolution)]
+            for res_folder in resolution_folders:
                 movie_folder_path = os.path.join(base_path, res_folder, movie_folder)
                 if os.path.isdir(movie_folder_path):
                     return movie_folder_path

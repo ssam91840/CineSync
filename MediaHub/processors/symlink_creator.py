@@ -1,4 +1,5 @@
 import os
+import platform
 import re
 import time
 import traceback
@@ -18,207 +19,20 @@ from MediaHub.config.config import *
 from MediaHub.processors.db_utils import *
 from MediaHub.utils.plex_utils import *
 from MediaHub.processors.process_db import *
+from MediaHub.processors.symlink_utils import *
 
 error_event = Event()
 log_imported_db = False
 db_initialized = False
 
-def delete_broken_symlinks(dest_dir, removed_path=None):
-    """Delete broken symlinks in the destination directory and update databases.
-
-    Args:
-        dest_dir: The destination directory containing symlinks
-        removed_path: Optional path of the removed file/folder to check
-    """
-    # Ensure database tables exist
-    try:
-        with sqlite3.connect(PROCESS_DB) as conn:
-            cursor = conn.cursor()
-            # Create file_index table if it doesn't exist
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS file_index (
-                    path TEXT PRIMARY KEY,
-                    is_symlink BOOLEAN,
-                    target_path TEXT,
-                    last_modified TIMESTAMP
-                )
-            ''')
-            conn.commit()
-    except sqlite3.Error as e:
-        log_message(f"Database initialization error: {e}", level="ERROR")
-        return False
-
-    symlinks_deleted = False
-
-    if removed_path:
-        # Normalize the removed path and handle spaces
-        removed_path = os.path.normpath(removed_path)
-        log_message(f"Processing removed path: {removed_path}", level="DEBUG")
-
-        try:
-            # Handle both databases in a single transaction
-            with sqlite3.connect(DB_FILE) as conn1, sqlite3.connect(PROCESS_DB) as conn2:
-                cursor1 = conn1.cursor()
-                cursor2 = conn2.cursor()
-
-                # Check if this is a directory
-                if removed_path.endswith(']') or os.path.isdir(removed_path):
-                    log_message(f"Detected folder removal: {removed_path}", level="DEBUG")
-                    search_path = f"{removed_path}/%"
-
-                    # Query processed_files table
-                    cursor1.execute("""
-                        SELECT file_path, destination_path
-                        FROM processed_files
-                        WHERE file_path LIKE ?
-                    """, (search_path,))
-                    results = cursor1.fetchall()
-
-                    # Query file_index table
-                    cursor2.execute("""
-                        SELECT path, target_path
-                        FROM file_index
-                        WHERE target_path LIKE ?
-                    """, (search_path,))
-                    file_index_results = cursor2.fetchall()
-
-                    # Combine results from both tables
-                    all_paths = set()
-                    for source_path, symlink_path in results:
-                        all_paths.add((source_path, symlink_path))
-                    for symlink_path, source_path in file_index_results:
-                        all_paths.add((source_path, symlink_path))
-
-                    for source_path, symlink_path in all_paths:
-                        if os.path.islink(symlink_path):
-                            try:
-                                target = os.readlink(symlink_path)
-                                log_message(f"Found symlink pointing to: {target}", level="DEBUG")
-
-                                log_message(f"Deleting symlink: {symlink_path}", level="INFO")
-                                os.remove(symlink_path)
-                                symlinks_deleted = True
-
-                                # Remove from both databases
-                                cursor1.execute("DELETE FROM processed_files WHERE destination_path = ?", (symlink_path,))
-                                cursor2.execute("DELETE FROM file_index WHERE path = ?", (symlink_path,))
-
-                                _cleanup_empty_dirs(os.path.dirname(symlink_path))
-                            except OSError as e:
-                                log_message(f"Error handling symlink {symlink_path}: {e}", level="ERROR")
-
-                else:
-                    # Handle single file removal
-                    cursor1.execute("SELECT destination_path FROM processed_files WHERE file_path = ?", (removed_path,))
-                    result1 = cursor1.fetchone()
-
-                    cursor2.execute("SELECT path FROM file_index WHERE target_path = ?", (removed_path,))
-                    result2 = cursor2.fetchone()
-
-                    symlink_paths = set()
-                    if result1:
-                        symlink_paths.add(result1[0])
-                    if result2:
-                        symlink_paths.add(result2[0])
-
-                    if not symlink_paths:
-                        # Try alternative matching methods
-                        filename = os.path.basename(removed_path)
-                        alternative_path = os.path.join(removed_path, filename)
-                        pattern = f"%{filename}"
-
-                        cursor1.execute("SELECT destination_path FROM processed_files WHERE file_path = ?", (alternative_path,))
-                        alt_result1 = cursor1.fetchone()
-                        if alt_result1:
-                            symlink_paths.add(alt_result1[0])
-
-                        cursor2.execute("SELECT path FROM file_index WHERE target_path LIKE ?", (pattern,))
-                        alt_results2 = cursor2.fetchall()
-                        symlink_paths.update(path[0] for path in alt_results2)
-
-                    for symlink_path in symlink_paths:
-                        if os.path.islink(symlink_path):
-                            try:
-                                target = os.readlink(symlink_path)
-                                log_message(f"Deleting symlink: {symlink_path}", level="INFO")
-                                os.remove(symlink_path)
-                                symlinks_deleted = True
-
-                                # Remove from both databases
-                                cursor1.execute("DELETE FROM processed_files WHERE destination_path = ?", (symlink_path,))
-                                cursor2.execute("DELETE FROM file_index WHERE path = ?", (symlink_path,))
-
-                                _cleanup_empty_dirs(os.path.dirname(symlink_path))
-                            except OSError as e:
-                                log_message(f"Error handling symlink {symlink_path}: {e}", level="ERROR")
-
-                conn1.commit()
-                conn2.commit()
-
-        except sqlite3.Error as e:
-            log_message(f"Database error: {e}", level="ERROR")
-            return False
-        except Exception as e:
-            log_message(f"Unexpected error: {e}", level="ERROR")
-            return False
-
-    else:
-        _check_all_symlinks(dest_dir)
-
-    return symlinks_deleted
-
-def _cleanup_empty_dirs(dir_path):
-    """Helper function to clean up empty directories."""
-    while dir_path and os.path.isdir(dir_path) and not os.listdir(dir_path):
-        log_message(f"Deleting empty folder: {dir_path}", level="INFO")
-        try:
-            os.rmdir(dir_path)
-            dir_path = os.path.dirname(dir_path)
-        except OSError:
-            break
-
-def _check_all_symlinks(dest_dir):
-    """Helper function to check all symlinks in a directory."""
-    log_message(f"Checking all symlinks in: {dest_dir}", level="INFO")
-    files = os.listdir(dest_dir)
-    for file in files:
-        file_path = os.path.join(dest_dir, file)
-        if os.path.islink(file_path):
-            target = os.readlink(file_path)
-            log_message(f"Checking symlink: {file_path} -> {target}", level="DEBUG")
-
-            if not os.path.exists(target):
-                log_message(f"Deleting broken symlink: {file_path}", level="INFO")
-                os.remove(file_path)
-
-                with sqlite3.connect(DB_FILE) as conn1, sqlite3.connect(PROCESS_DB) as conn2:
-                    cursor1 = conn1.cursor()
-                    cursor2 = conn2.cursor()
-                    cursor1.execute("DELETE FROM processed_files WHERE destination_path = ?", (file_path,))
-                    cursor2.execute("DELETE FROM file_index WHERE path = ?", (file_path,))
-                    affected_rows = cursor.rowcount
-                    conn1.commit()
-                    conn2.commit()
-                    log_message(f"Removed {affected_rows} database entries", level="DEBUG")
-
-                _cleanup_empty_dirs(os.path.dirname(file_path))
-
-def get_existing_symlink_info(src_file):
-    """Get information about existing symlink for a source file."""
-    existing_dest_path = get_destination_path(src_file)
-    if existing_dest_path and os.path.exists(os.path.dirname(existing_dest_path)):
-        dir_path = os.path.dirname(existing_dest_path)
-        for filename in os.listdir(dir_path):
-            full_path = os.path.join(dir_path, filename)
-            if os.path.islink(full_path) and os.readlink(full_path) == src_file:
-                return full_path
-    return None
-
 def process_file(args, processed_files_log, force=False):
-    src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index = args
+    src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index, tmdb_id, imdb_id, tvdb_id = args
 
     if error_event.is_set():
         return
+
+    # Normalize path
+    src_file = os.path.normpath(src_file)
 
     # Skip if not a known file type
     if not get_known_types(file):
@@ -251,6 +65,7 @@ def process_file(args, processed_files_log, force=False):
 
     existing_dest_path = get_destination_path(src_file)
     if existing_dest_path and not force:
+        return
         if not os.path.exists(existing_dest_path):
             dir_path = os.path.dirname(existing_dest_path)
             if os.path.exists(dir_path):
@@ -277,7 +92,7 @@ def process_file(args, processed_files_log, force=False):
 
     # Show detection logic
     is_show = False
-    episode_match = re.search(r'(.*?)(S\d{1,2}\.?E\d{2}|S\d{1,2}\s*\d{2}|S\d{2}E\d{2}|S\d{2}e\d{2}|[0-9]+x[0-9]+|[0-9]+e[0-9]+|\bep\.?\s*\d{1,2}\b|\bEp\.?\s*\d{1,2}\b|\bEP\.?\s*\d{1,2}\b|S\d{2}\sE\d{2}|MINI[- ]SERIES|MINISERIES|\s-\s(?!1080p|720p|480p|2160p|\d+Kbps)\d{2,3}(?!Kbps)|\s-(?!1080p|720p|480p|2160p|\d+Kbps)\d{2,3}(?!Kbps)|\s-\s*(?!1080p|720p|480p|2160p|\d+Kbps)\d{2,3}(?!Kbps)|[Ee]pisode\s*\d{2}|[Ee]p\s*\d{2}|Season_-\d{2}|\bSeason\d+\b|\bE\d+\b|series\.\d+\.\d+of\d+|Episode\s+(\d+)\s+(.*?)\.(\w+))', file, re.IGNORECASE)
+    episode_match = re.search(r'(.*?)(S\d{1,2}\.?E\d{2}|S\d{1,2}\s*\d{2}|S\d{2}E\d{2}|S\d{2}e\d{2}|[0-9]+x[0-9]+|[0-9]+e[0-9]+|\bep\.?\s*\d{1,2}\b|\bEp\.?\s*\d{1,2}\b|\bEP\.?\s*\d{1,2}\b|S\d{2}\sE\d{2}|MINI[- ]SERIES|MINISERIES|\s-\s(?!1080p|720p|480p|2160p|\d+Kbps|\d{4}|\d+bit)\d{2,3}(?!Kbps)|\s-(?!1080p|720p|480p|2160p|\d+Kbps|\d{4}|\d+bit)\d{2,3}(?!Kbps)|\s-\s*(?!1080p|720p|480p|2160p|\d+Kbps|\d{4}|\d+bit)\d{2,3}(?!Kbps)|[Ee]pisode\s*\d{2}|[Ee]p\s*\d{2}|Season_-\d{2}|\bSeason\d+\b|\bE\d+\b|series\.\d+\.\d+of\d+|Episode\s+(\d+)\s+(.*?)\.(\w+))', file, re.IGNORECASE)
     mini_series_match = re.search(r'(MINI[- ]SERIES|MINISERIES)', file, re.IGNORECASE)
     anime_episode_pattern = re.compile(r'\s-\s\d{2,3}\s', re.IGNORECASE)
     anime_patterns = get_anime_patterns()
@@ -296,9 +111,9 @@ def process_file(args, processed_files_log, force=False):
 
     # Determine whether to process as show or movie
     if is_show:
-        dest_file = process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index, episode_match)
+        dest_file = process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index, episode_match, tmdb_id=tmdb_id, imdb_id=imdb_id, tvdb_id=tvdb_id)
     else:
-        dest_file = process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index)
+        dest_file = process_movie(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index, tmdb_id=tmdb_id, imdb_id=imdb_id)
 
     # Check if the file should be considered an extra based on size
     if skip_extras_folder and is_file_extra(file, src_file):
@@ -347,7 +162,8 @@ def process_file(args, processed_files_log, force=False):
         log_message(error_message, level="ERROR")
 
     return None
-def create_symlinks(src_dirs, dest_dir, auto_select=False, single_path=None, force=False, mode='create'):
+
+def create_symlinks(src_dirs, dest_dir, auto_select=False, single_path=None, force=False, mode='create', tmdb_id=None, imdb_id=None, tvdb_id=None):
     global log_imported_db
 
     os.makedirs(dest_dir, exist_ok=True)
@@ -367,62 +183,121 @@ def create_symlinks(src_dirs, dest_dir, auto_select=False, single_path=None, for
     # Load the record of processed files
     processed_files_log = load_processed_files()
 
-    tasks = []
-    with ThreadPoolExecutor(max_workers=cpu_count()) as executor:
+    if auto_select:
+        # Use thread pool for parallel processing when auto-select is enabled
+        tasks = []
+        with ThreadPoolExecutor(max_workers=cpu_count()) as executor:
+            for src_dir in src_dirs:
+                if os.path.isfile(src_dir):
+                    src_file = src_dir
+                    root = os.path.dirname(src_file)
+                    file = os.path.basename(src_file)
+                    actual_dir = os.path.basename(root)
+
+                    # Get appropriate destination index based on mode
+                    dest_index = (get_dest_index_from_db() if mode == 'monitor'
+                                else build_dest_index(dest_dir))
+
+                    args = (src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index, tmdb_id, imdb_id, tvdb_id)
+                    tasks.append(executor.submit(process_file, args, processed_files_log, force))
+                else:
+                    # Handle directory
+                    actual_dir = os.path.basename(os.path.normpath(src_dir))
+                    log_message(f"Scanning source directory: {src_dir} (actual: {actual_dir})", level="INFO")
+
+                    # Get appropriate destination index based on mode
+                    dest_index = (get_dest_index_from_db() if mode == 'monitor'
+                                else build_dest_index(dest_dir))
+
+                    for root, _, files in os.walk(src_dir):
+                        for file in files:
+                            if error_event.is_set():
+                                log_message("Stopping further processing due to an earlier error.", level="WARNING")
+                                return
+
+                            src_file = os.path.join(root, file)
+
+                            # Check if the file is an extra based on the size
+                            if skip_extras_folder and is_file_extra(file, src_file):
+                                log_message(f"Skipping extras file: {file}", level="DEBUG")
+                                continue
+
+                            if mode == 'create' and src_file in processed_files_log and not force:
+                                continue
+
+                            args = (src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index, tmdb_id, imdb_id, tvdb_id)
+                            tasks.append(executor.submit(process_file, args, processed_files_log, force))
+
+            # Process completed tasks
+            for task in as_completed(tasks):
+                if error_event.is_set():
+                    log_message("Error detected during task execution. Stopping all tasks.", level="WARNING")
+                    return
+
+                try:
+                    result = task.result()
+                    if result and isinstance(result, tuple) and len(result) == 3:
+                        dest_file, is_symlink, target_path = result
+                        if mode == 'monitor':
+                            update_single_file_index(dest_file, is_symlink, target_path)
+                except Exception as e:
+                    log_message(f"Error processing task: {str(e)}", level="ERROR")
+    else:
+        # Process sequentially when auto-select is disabled
         for src_dir in src_dirs:
-            if os.path.isfile(src_dir):
-                src_file = src_dir
-                root = os.path.dirname(src_file)
-                file = os.path.basename(src_file)
-                actual_dir = os.path.basename(root)
+            if error_event.is_set():
+                log_message("Stopping further processing due to an earlier error.", level="WARNING")
+                return
 
-                # Get appropriate destination index based on mode
-                dest_index = (get_dest_index_from_db() if mode == 'monitor'
-                            else build_dest_index(dest_dir))
+            try:
+                if os.path.isfile(src_dir):
+                    src_file = src_dir
+                    root = os.path.dirname(src_file)
+                    file = os.path.basename(src_file)
+                    actual_dir = os.path.basename(root)
 
-                args = (src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index)
-                tasks.append(executor.submit(process_file, args, processed_files_log, force))
-            else:
-                # Handle directory
-                actual_dir = os.path.basename(os.path.normpath(src_dir))
-                log_message(f"Scanning source directory: {src_dir} (actual: {actual_dir})", level="INFO")
+                    # Get appropriate destination index based on mode
+                    dest_index = (get_dest_index_from_db() if mode == 'monitor'
+                                else build_dest_index(dest_dir))
 
-                # Get appropriate destination index based on mode
-                dest_index = (get_dest_index_from_db() if mode == 'monitor'
-                            else build_dest_index(dest_dir))
+                    args = (src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index, tmdb_id, imdb_id, tvdb_id)
+                    result = process_file(args, processed_files_log, force)
 
-                for root, _, files in os.walk(src_dir):
-                    for file in files:
-                        if error_event.is_set():
-                            log_message("Stopping further processing due to an earlier error.", level="WARNING")
-                            return
+                    if result and isinstance(result, tuple) and len(result) == 3:
+                        dest_file, is_symlink, target_path = result
+                        if mode == 'monitor':
+                            update_single_file_index(dest_file, is_symlink, target_path)
+                else:
+                    # Handle directory
+                    actual_dir = os.path.basename(os.path.normpath(src_dir))
+                    log_message(f"Scanning source directory: {src_dir} (actual: {actual_dir})", level="INFO")
 
-                        src_file = os.path.join(root, file)
+                    # Get appropriate destination index based on mode
+                    dest_index = (get_dest_index_from_db() if mode == 'monitor'
+                                else build_dest_index(dest_dir))
 
-                        # Check if the file is an extra based on the size
-                        if skip_extras_folder and is_file_extra(file, src_file):
-                            log_message(f"Skipping extras file: {file}", level="DEBUG")
-                            continue
+                    for root, _, files in os.walk(src_dir):
+                        for file in files:
+                            if error_event.is_set():
+                                log_message("Stopping further processing due to an earlier error.", level="WARNING")
+                                return
 
-                        if mode == 'create' and src_file in processed_files_log and not force:
-                            continue
+                            src_file = os.path.join(root, file)
 
-                        args = (src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index)
-                        tasks.append(executor.submit(process_file, args, processed_files_log, force))
+                            # Check if the file is an extra based on the size
+                            if skip_extras_folder and is_file_extra(file, src_file):
+                                log_message(f"Skipping extras file: {file}", level="DEBUG")
+                                continue
 
-    # Process completed tasks
-    for task in as_completed(tasks):
-        if error_event.is_set():
-            log_message("Error detected during task execution. Stopping all tasks.", level="WARNING")
-            return
+                            if mode == 'create' and src_file in processed_files_log and not force:
+                                continue
 
-        try:
-            result = task.result()
-            if result and isinstance(result, tuple) and len(result) == 3:
-                dest_file, is_symlink, target_path = result
-                if mode == 'monitor':
-                    update_single_file_index(dest_file, is_symlink, target_path)
-            else:
-                task.result()
-        except Exception as e:
-            log_message(f"Error processing task: {str(e)}", level="ERROR")
+                            args = (src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index, tmdb_id, imdb_id, tvdb_id)
+                            result = process_file(args, processed_files_log, force)
+
+                            if result and isinstance(result, tuple) and len(result) == 3:
+                                dest_file, is_symlink, target_path = result
+                                if mode == 'monitor':
+                                    update_single_file_index(dest_file, is_symlink, target_path)
+            except Exception as e:
+                log_message(f"Error processing directory {src_dir}: {str(e)}", level="ERROR")

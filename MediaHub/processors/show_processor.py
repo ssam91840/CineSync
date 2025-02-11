@@ -3,12 +3,13 @@ import re
 import requests
 from dotenv import load_dotenv, find_dotenv
 from MediaHub.utils.file_utils import extract_resolution_from_filename, extract_folder_year, clean_query, extract_year, extract_resolution_from_folder
-from MediaHub.api.tmdb_api import search_tv_show, get_episode_name
+from MediaHub.api.tmdb_api import search_tv_show
 from MediaHub.utils.logging_utils import log_message
 from MediaHub.config.config import *
 from MediaHub.processors.anime_processor import is_anime_file, process_anime_show
 from MediaHub.utils.file_utils import *
 from MediaHub.utils.mediainfo import *
+from MediaHub.api.tmdb_api_helpers import get_episode_name
 
 # Retrieve base_dir from environment variables
 source_dirs = os.getenv('SOURCE_DIR', '').split(',')
@@ -18,7 +19,7 @@ global api_key
 global api_warning_logged
 global offline_mode
 
-def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index, episode_match):
+def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enabled, rename_enabled, auto_select, dest_index, episode_match, tmdb_id=None, imdb_id=None, tvdb_id=None):
     global offline_mode
 
     if any(root == source_dir.strip() for source_dir in source_dirs):
@@ -78,43 +79,55 @@ def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enab
 
     if not anime_result or episode_match:
         if episode_match:
-            episode_identifier = episode_match.group(2)
-            series_pattern = re.search(r'series\.(\d+)\.(\d+)of\d+', file, re.IGNORECASE)
-            if series_pattern:
-                season_number = series_pattern.group(1).zfill(2)
-                episode_number = series_pattern.group(2).zfill(2)
-                episode_identifier = f"S{season_number}E{episode_number}"
-                show_name = re.sub(r'\.series\.\d+\.\d+of\d+.*$', '', clean_folder_name, flags=re.IGNORECASE)
-                show_name = show_name.replace('.', ' ').strip()
-                create_season_folder = True
-            elif re.match(r'S\d{2}[eE]\d{2}', episode_identifier, re.IGNORECASE):
-                show_name = re.sub(r'\s*(S\d{2}.*|Season \d+).*', '', clean_folder_name).replace('-', ' ').replace('.', ' ').strip()
-                create_season_folder = True
-            elif re.match(r'[0-9]+x[0-9]+', episode_identifier, re.IGNORECASE):
-                show_name = episode_match.group(1).replace('.', ' ').strip()
-                season_number = re.search(r'([0-9]+)x', episode_identifier).group(1)
-                episode_identifier = f"S{season_number}E{episode_identifier.split('x')[1]}"
-                create_season_folder = True
-            elif re.match(r'S\d{2}[0-9]+', episode_identifier, re.IGNORECASE):
-                show_name = episode_match.group(1).replace('.', ' ').strip()
-                episode_identifier = f"S{episode_identifier[1:3]}E{episode_identifier[3:]}"
-                create_season_folder = True
-            elif re.match(r'[0-9]+e[0-9]+', episode_identifier, re.IGNORECASE):
-                show_name = episode_match.group(1).replace('.', ' ').strip()
-                episode_identifier = f"S{episode_identifier[0:2]}E{episode_identifier[2:]}"
-                create_season_folder = True
-            elif re.match(r'Ep\.?\s*\d+', episode_identifier, re.IGNORECASE):
-                extracted_filename = episode_match.string
-                show_name = re.sub(r'^\[.*?\]\s*', '', extracted_filename).replace('.', ' ').strip()
-                episode_number = re.search(r'Ep\.?\s*(\d+)', episode_identifier, re.IGNORECASE).group(1)
-                season_number = re.search(r'S(\d{2})', parent_folder_name, re.IGNORECASE)
-                season_number = season_number.group(1) if season_number else "01"
-                episode_identifier = f"S{season_number}E{episode_number}"
-                create_season_folder = True
+            # First, try to extract season number directly from the episode identifier
+            season_from_identifier = re.search(r'S(\d{2})', file, re.IGNORECASE)
+            if season_from_identifier:
+                season_number = season_from_identifier.group(1)
+                episode_num = re.search(r'[Ee](\d{2})', file, re.IGNORECASE)
+                if episode_num:
+                    episode_identifier = f"S{season_number}E{episode_num.group(1)}"
+                    show_name = re.sub(r'\s*-?\s*S\d{2}\s*E\d{2}.*$', '', clean_folder_name).strip()
+                    create_season_folder = True
             else:
-                show_name = episode_match.group(1).replace('.', ' ').strip()
-                episode_identifier = "S01E01"
-                create_extras_folder = True
+                # If no direct season number, proceed with existing patterns
+                episode_identifier = episode_match.group(2)
+                series_pattern = re.search(r'series\.(\d+)\.(\d+)of\d+', file, re.IGNORECASE)
+                if series_pattern:
+                    season_number = series_pattern.group(1).zfill(2)
+                    episode_number = series_pattern.group(2).zfill(2)
+                    episode_identifier = f"S{season_number}E{episode_number}"
+                    show_name = re.sub(r'\.series\.\d+\.\d+of\d+.*$', '', clean_folder_name, flags=re.IGNORECASE)
+                    show_name = show_name.replace('.', ' ').strip()
+                    create_season_folder = True
+
+                elif re.match(r'S\d{2}[eE]\d{2}', episode_identifier, re.IGNORECASE):
+                    show_name = re.sub(r'\s*(S\d{2}.*|Season \d+).*', '', clean_folder_name).replace('-', ' ').replace('.', ' ').strip()
+                    create_season_folder = True
+                elif re.match(r'[0-9]+x[0-9]+', episode_identifier, re.IGNORECASE):
+                    show_name = episode_match.group(1).replace('.', ' ').strip()
+                    season_number = re.search(r'([0-9]+)x', episode_identifier).group(1)
+                    episode_identifier = f"S{season_number}E{episode_identifier.split('x')[1]}"
+                    create_season_folder = True
+                elif re.match(r'S\d{2}[0-9]+', episode_identifier, re.IGNORECASE):
+                    show_name = episode_match.group(1).replace('.', ' ').strip()
+                    episode_identifier = f"S{episode_identifier[1:3]}E{episode_identifier[3:]}"
+                    create_season_folder = True
+                elif re.match(r'[0-9]+e[0-9]+', episode_identifier, re.IGNORECASE):
+                    show_name = episode_match.group(1).replace('.', ' ').strip()
+                    episode_identifier = f"S{episode_identifier[0:2]}E{episode_identifier[2:]}"
+                    create_season_folder = True
+                elif re.match(r'Ep\.?\s*\d+', episode_identifier, re.IGNORECASE):
+                    extracted_filename = episode_match.string
+                    show_name = re.sub(r'^\[.*?\]\s*', '', extracted_filename).replace('.', ' ').strip()
+                    episode_number = re.search(r'Ep\.?\s*(\d+)', episode_identifier, re.IGNORECASE).group(1)
+                    season_number = re.search(r'S(\d{2})', parent_folder_name, re.IGNORECASE)
+                    season_number = season_number.group(1) if season_number else "01"
+                    episode_identifier = f"S{season_number}E{episode_number}"
+                    create_season_folder = True
+                else:
+                    show_name = episode_match.group(1).replace('.', ' ').strip()
+                    episode_identifier = "S01E01"
+                    create_extras_folder = True
 
             # Extract season number
             season_match = re.search(r'(?:S|Season)(\d+)', clean_folder_name, re.IGNORECASE)
@@ -168,7 +181,7 @@ def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enab
     api_key = get_api_key()
     proper_show_name = show_folder
     if api_key and not offline_mode and not anime_result:
-        result = search_tv_show(show_folder, year, auto_select=auto_select, actual_dir=actual_dir, file=file, root=root)
+        result = search_tv_show(show_folder, year, auto_select=auto_select, actual_dir=actual_dir, file=file, root=root, episode_match=episode_match, tmdb_id=tmdb_id, imdb_id=imdb_id, tvdb_id=tvdb_id)
         if isinstance(result, tuple) and len(result) == 3:
             proper_show_name, show_name, is_anime_genre = result
         else:
@@ -197,23 +210,8 @@ def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enab
             log_message(f"Resolution could not be extracted from filename or folder name. Defaulting to 'Shows'.", level="DEBUG")
             resolution = 'Shows'
 
-    # Resolution folder determination logic remains the same as in original code
-    if 'remux' in file.lower():
-        if '2160' in file or '4k' in file.lower():
-            resolution_folder = 'UltraHDRemuxShows'
-        elif '1080' in file:
-            resolution_folder = '1080pRemuxLibrary'
-        else:
-            resolution_folder = 'RemuxShows'
-    else:
-        resolution_folder = {
-            '2160p': 'UltraHD',
-            '4k': 'UltraHD',
-            '1080p': 'FullHD',
-            '720p': 'SDClassics',
-            '480p': 'Retro480p',
-            'DVD': 'RetroDVD'
-        }.get(resolution.lower(), 'Shows')
+    # Replace the existing resolution folder determination logic with:
+    resolution_folder = get_show_resolution_folder(file, resolution)
 
     # Modified destination path determination
     if is_extra:
@@ -313,12 +311,14 @@ def process_show(src_file, root, file, dest_dir, actual_dir, tmdb_folder_id_enab
     def find_show_folder_in_resolution_folders():
         if is_show_resolution_structure_enabled():
             base_path = os.path.join(dest_dir, custom_show_layout()) if custom_show_layout() else os.path.join(dest_dir, 'CineSync', 'Shows')
-            for res_folder in ['UltraHD', 'FullHD', 'SDClassics', 'Retro480p', 'RetroDVD', 'Shows']:
+            resolution_folders = [get_show_resolution_folder(file, resolution)]
+            for res_folder in resolution_folders:
                 show_folder_path = os.path.join(base_path, res_folder, show_folder)
                 if os.path.isdir(show_folder_path):
                     return show_folder_path
         else:
-            for res_folder in ['UltraHD', 'FullHD', 'SDClassics', 'Retro480p', 'RetroDVD', 'Shows']:
+            resolution_folders = [get_show_resolution_folder(file, resolution)]
+            for res_folder in resolution_folders:
                 show_folder_path = os.path.join(dest_dir, 'CineSync', 'Shows', res_folder, show_folder)
                 if os.path.isdir(show_folder_path):
                     return show_folder_path
