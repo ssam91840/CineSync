@@ -3,6 +3,7 @@ import { Calendar, FolderOpen, AlertCircle, Loader2 } from 'lucide-react';
 import { searchMedia, getMoviePosterUrl } from '../../utils/tmdb';
 import PosterGrid from './PosterGrid';
 import MovieDetailsModal from '../MovieDetails/MovieDetailsModal';
+import SeriesDetailsModal from '../SeriesDetails/SeriesDetailsModal';
 import type { FileInfo } from '../../utils/fileSystem';
 import type { MovieInfo } from '../../types';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -130,6 +131,7 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
     if (movie.tmdbId) {
       setSelectedMovie({
         id: movie.tmdbId,
+        mediaType: movie.mediaType,
         fileInfo: {
           sourcePath: movie.path,
           destinationPath: movie.symlinkPath || movie.path
@@ -218,13 +220,22 @@ export default function RecentImports({ files, isScanning, isRefreshing }: Props
       </AnimatePresence>
 
       {selectedMovie && (
+      selectedMovie.mediaType === 'movie' ? (
         <MovieDetailsModal
           movieId={selectedMovie.id}
           isOpen={true}
           onClose={() => setSelectedMovie(null)}
           fileInfo={selectedMovie.fileInfo}
         />
-      )}
+      ) : (
+        <SeriesDetailsModal
+          seriesId={selectedMovie.id}
+          isOpen={true}
+          onClose={() => setSelectedMovie(null)}
+          fileInfo={selectedMovie.fileInfo}
+        />
+      )
+    )}
     </div>
   );
 }

@@ -71,3 +71,12 @@ export interface FileInfo {
   symlinkPath?: string;
   error?: string;
 }
+
+export interface SelectedMedia {
+  id: number;
+  mediaType: 'movie' | 'tv';
+  fileInfo: {
+    sourcePath: string;
+    destinationPath: string;
+  };
+}
