@@ -1,10 +1,11 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { X, Star, Clock, DollarSign, Globe, Calendar, FolderSymlink } from 'lucide-react';
+import { X, Star, Clock, DollarSign, Globe, Calendar, FolderSymlink, Loader2, Edit2 } from 'lucide-react';
 import { useMovieDetails } from '../../hooks/useMovieDetails';
 import CastSection from './CastSection';
 import ImageWithFallback from './ImageWithFallback';
 import LoadingSpinner from './LoadingSpinner';
+import ModifyDestinationDialog from './ModifyDestinationDialog';
 
 interface Props {
   movieId: number;
@@ -19,6 +20,9 @@ interface Props {
 export default function MovieDetailsModal({ movieId, isOpen, onClose, fileInfo }: Props) {
   const { data: movie, isLoading, error } = useMovieDetails(movieId);
   const [resolvedSourcePath, setResolvedSourcePath] = useState<string | null>(null);
+  const [isModifying, setIsModifying] = useState(false);
+  const [modifyError, setModifyError] = useState<string | null>(null);
+  const [showModifyDialog, setShowModifyDialog] = useState(false);
 
   useEffect(() => {
     const resolveSourcePath = async () => {
@@ -51,6 +55,17 @@ export default function MovieDetailsModal({ movieId, isOpen, onClose, fileInfo }
     const hours = Math.floor(minutes / 60);
     const remainingMinutes = minutes % 60;
     return `${hours}h ${remainingMinutes}m`;
+  };
+
+  const handleModifyClick = () => {
+    if (!fileInfo?.sourcePath) return;
+    setShowModifyDialog(true);
+  };
+
+  const handleModifyComplete = (newDestination: string) => {
+    setShowModifyDialog(false);
+    // Here you would update the UI with the new destination
+    // This could involve refreshing the parent component or updating local state
   };
 
   return (
@@ -170,10 +185,34 @@ export default function MovieDetailsModal({ movieId, isOpen, onClose, fileInfo }
                       {/* File Information */}
                       {fileInfo && (
                         <div className="mb-6 bg-gray-800/50 rounded-lg p-4">
-                          <h3 className="text-xl font-semibold mb-4 flex items-center gap-2">
-                            <FolderSymlink className="h-5 w-5 text-indigo-400" />
-                            File Information
-                          </h3>
+                          <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-xl font-semibold flex items-center gap-2">
+                              <FolderSymlink className="h-5 w-5 text-indigo-400" />
+                              File Information
+                            </h3>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleModifyClick();
+                              }}
+                              className="flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 rounded-lg text-sm transition-colors"
+                              disabled={isModifying}
+                            >
+                              {isModifying ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Edit2 className="h-4 w-4" />
+                              )}
+                              Modify Destination
+                            </button>
+                          </div>
+                          
+                          {modifyError && (
+                            <div className="mb-4 p-3 bg-red-500/10 border border-red-500/20 rounded text-red-400 text-sm">
+                              {modifyError}
+                            </div>
+                          )}
+
                           <div className="space-y-3">
                             <div>
                               <label className="text-sm text-gray-400">Source Path</label>
@@ -246,6 +285,14 @@ export default function MovieDetailsModal({ movieId, isOpen, onClose, fileInfo }
               </>
             )}
           </motion.div>
+
+          {showModifyDialog && fileInfo && (
+            <ModifyDestinationDialog
+              sourcePath={fileInfo.sourcePath}
+              onComplete={handleModifyComplete}
+              onClose={() => setShowModifyDialog(false)}
+            />
+          )}
         </motion.div>
       )}
     </AnimatePresence>
