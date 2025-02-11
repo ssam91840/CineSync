@@ -88,7 +88,7 @@ app.post('/api/scan/select', async (req, res) => {
       // Initialize new scan process here
       scanProcess = spawn('C:\\Program Files\\Git\\bin\\bash.exe', [
         '-c',
-        `python MediaHub/main.py "${currentFinalPath}" --force`
+        `python MediaHub/main.py "${currentFinalPath}" --force --disable-monitor`
       ]);
       
       // Wait a short time for the process to initialize
