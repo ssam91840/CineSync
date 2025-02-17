@@ -2,6 +2,8 @@ import { env } from '../config/env.config';
 
 let currentEnv = { ...env };
 
+const API_URL = `http://${window.location.hostname}:3001`;
+
 export const getEnvironmentValue = (key: keyof typeof env): string | number | boolean | undefined => {
   return currentEnv[key];
 };
@@ -47,8 +49,6 @@ export const getLastScanDate = async (_dir: string): Promise<string> => {
   });
 };
 
-const API_URL = 'http://localhost:3001';
-
 export const saveEnvironmentValues = async (settings: { key: string; value: string | number | boolean }[]) => {
   try {
     const response = await fetch(`${API_URL}/api/settings/environment`, {
@@ -66,7 +66,6 @@ export const saveEnvironmentValues = async (settings: { key: string; value: stri
 
     const result = await response.json();
     
-    // Update current environment values after successful save
     settings.forEach(({ key, value }) => {
       currentEnv = {
         ...currentEnv,
@@ -91,7 +90,6 @@ export const getEnvironmentValues = async () => {
 
     const data = await response.json();
     
-    // Update current environment values after fetch
     currentEnv = {
       ...currentEnv,
       ...data.settings

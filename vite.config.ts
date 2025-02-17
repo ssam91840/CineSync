@@ -7,4 +7,9 @@ export default defineConfig({
     exclude: ['lucide-react'],
   },
   envPrefix: ['VITE_', 'SOURCE_', 'DESTINATION_', 'USE_', 'LOG_', 'MAX_', 'SKIP_', 'EXTRAS_', 'DB_', 'TMDB_'],
+  server: {
+    host: '0.0.0.0',
+    port: 5173,
+    strictPort: true,
+  },
 });

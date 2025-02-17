@@ -4,6 +4,8 @@ import { Loader2, X, AlertCircle, Search } from 'lucide-react';
 import ImageWithFallback from './ImageWithFallback';
 import { searchMedia, getMoviePosterUrl } from '../../utils/tmdb';
 
+const API_URL = `http://${window.location.hostname}:3001`;
+
 interface Props {
   sourcePath: string;
   onComplete: (newDestination: string) => void;
@@ -41,7 +43,7 @@ export default function ModifyDestinationDialog({ sourcePath, onComplete, onClos
     }
 
     currentSearchRef.current = searchTerm;
-    eventSourceRef.current = new EventSource('http://localhost:3001/api/scan/logs');
+    eventSourceRef.current = new EventSource(`${API_URL}/api/scan/logs`);
 
     eventSourceRef.current.onmessage = async (event) => {
       try {
@@ -93,7 +95,7 @@ export default function ModifyDestinationDialog({ sourcePath, onComplete, onClos
         setError(null);
         setResults([]);
 
-        const initResponse = await fetch('http://localhost:3001/api/scan/start', {
+        const initResponse = await fetch(`${API_URL}/api/scan/start`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ sourcePath }),
@@ -117,7 +119,7 @@ export default function ModifyDestinationDialog({ sourcePath, onComplete, onClos
         selection = `${(params.selectionIndex || 0) + 1}`;
       }
 
-      const response = await fetch('http://localhost:3001/api/scan/select', {
+      const response = await fetch(`${API_URL}/api/scan/select`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ selection }),

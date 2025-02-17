@@ -1,6 +1,8 @@
 import { getEnvironmentValue } from './environment';
 import { debug } from './debug';
 
+const API_URL = `http://${window.location.hostname}:3001`;
+
 export interface FileInfo {
   name: string;
   path: string;
@@ -31,7 +33,7 @@ export const scanDirectory = async (path: string, recursive: boolean = true): Pr
       recursive: recursive.toString()
     });
     
-    const response = await fetch(`http://localhost:3001/api/files/scan?${queryParams}`);
+    const response = await fetch(`${API_URL}/api/files/scan?${queryParams}`);
     
     if (!response.ok) {
       const errorData = await response.json();
